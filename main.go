@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
@@ -37,10 +40,36 @@ func printUsage() {
 }
 
 func handleGet(args []string) {
-	fmt.Println("get command - not implemented yet")
-	if len(args) > 0 {
-		fmt.Printf("PR number: %s\n", args[0])
+	owner, repo, err := getRepoInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
+	
+	var prNumber int
+	if len(args) > 0 {
+		prNumber, err = strconv.Atoi(args[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid PR number '%s'\n", args[0])
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: PR number required\n")
+		os.Exit(1)
+	}
+	
+	client := createGitHubClient()
+	ctx := context.Background()
+	
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error fetching PR: %v\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Printf("Found PR #%d: %s\n", prNumber, pr.GetTitle())
+	fmt.Printf("Branch: %s\n", pr.GetHead().GetRef())
+	fmt.Printf("Base: %s\n", pr.GetBase().GetRef())
 }
 
 func handleSend(args []string) {
@@ -66,4 +95,36 @@ func createGitHubClient() *github.Client {
 	tc := oauth2.NewClient(ctx, ts)
 	
 	return github.NewClient(tc)
+}
+
+func getRepoInfo() (owner, repo string, err error) {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("not in a git repository or no origin remote")
+	}
+	
+	remoteURL := strings.TrimSpace(string(output))
+	
+	// Parse GitHub URL patterns:
+	// https://github.com/owner/repo.git
+	// git@github.com:owner/repo.git
+	var repoPath string
+	if strings.HasPrefix(remoteURL, "https://github.com/") {
+		repoPath = strings.TrimPrefix(remoteURL, "https://github.com/")
+	} else if strings.HasPrefix(remoteURL, "git@github.com:") {
+		repoPath = strings.TrimPrefix(remoteURL, "git@github.com:")
+	} else {
+		return "", "", fmt.Errorf("remote origin is not a GitHub repository")
+	}
+	
+	// Remove .git suffix
+	repoPath = strings.TrimSuffix(repoPath, ".git")
+	
+	parts := strings.Split(repoPath, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid GitHub repository format")
+	}
+	
+	return parts[0], parts[1], nil
 }
