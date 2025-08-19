@@ -515,15 +515,12 @@ func (f *FileWithComments) Parse(content string) error {
 }
 
 func getIndentation(line string) string {
-	var indent strings.Builder
-	for _, r := range line {
-		if r == ' ' || r == '\t' {
-			indent.WriteRune(r)
-		} else {
-			break
+	for i, r := range line {
+		if !(r == ' ' || r == '\t') {
+			return line[:i]
 		}
 	}
-	return indent.String()
+	return line
 }
 
 func wrapText(text string, width int, indent string) []string {
