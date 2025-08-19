@@ -17,7 +17,7 @@ import (
 
 const (
 	// Comment formatting constants
-	CommentMarker     = "⦒"
+	CommentMarker     = "❯" // U+276F
 	RuleChar          = "─"
 	TimeFormat        = "2006-01-02 15:04"
 	BranchPrefix      = "pr-"
@@ -61,7 +61,7 @@ func handleGet(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	var prNumber int
 	if len(args) > 0 {
 		prNumber, err = strconv.Atoi(args[0])
@@ -86,39 +86,39 @@ func handleGet(args []string) {
 			os.Exit(1)
 		}
 	}
-	
+
 	client := createGitHubClient()
 	ctx := context.Background()
-	
+
 	pr, _, err := client.PullRequests.Get(ctx, owner, repo, prNumber)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching PR: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	fmt.Printf("Found PR #%d: %s\n", prNumber, pr.GetTitle())
 	fmt.Printf("Branch: %s\n", pr.GetHead().GetRef())
 	fmt.Printf("Base: %s\n", pr.GetBase().GetRef())
-	
+
 	// Check for uncommitted changes
 	if hasUncommittedChanges() {
 		fmt.Fprintf(os.Stderr, "Error: You have uncommitted changes. Please commit or stash them first.\n")
 		os.Exit(1)
 	}
-	
+
 	// Create and switch to PR branch
 	branchName := fmt.Sprintf("%s%d", BranchPrefix, prNumber)
 	headRef := pr.GetHead().GetRef()
 	headSHA := pr.GetHead().GetSHA()
-	
+
 	err = checkoutPRBranch(branchName, headRef, headSHA)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking out branch: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	fmt.Printf("Switched to branch '%s'\n", branchName)
-	
+
 	// Fetch and embed PR comments
 	fmt.Println("Fetching PR comments...")
 	err = embedPRComments(client, ctx, owner, repo, prNumber)
@@ -126,13 +126,13 @@ func handleGet(args []string) {
 		fmt.Fprintf(os.Stderr, "Error embedding comments: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Auto-commit the embedded comments to avoid uncommitted changes
 	err = commitEmbeddedComments(prNumber)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to commit embedded comments: %v\n", err)
 	}
-	
+
 	fmt.Println("PR ready for review!")
 }
 
@@ -157,25 +157,25 @@ func getGitHubToken() string {
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return token
 	}
-	
+
 	// Try to read from gh CLI config
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	
+
 	configPath := filepath.Join(homeDir, ".config", "gh", "hosts.yml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return ""
 	}
-	
+
 	var config GHConfig
 	err = yaml.Unmarshal(data, &config)
 	if err != nil {
 		return ""
 	}
-	
+
 	return config.GithubCom.OauthToken
 }
 
@@ -192,7 +192,7 @@ func createGitHubClient() *github.Client {
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	tc := oauth2.NewClient(ctx, ts)
-	
+
 	return github.NewClient(tc)
 }
 
@@ -212,22 +212,22 @@ func getRemoteName() string {
 	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
 		return strings.TrimSpace(string(output))
 	}
-	
+
 	// Default to origin
 	return "origin"
 }
 
 func getRepoInfo() (owner, repo string, err error) {
 	remoteName := getRemoteName()
-	
+
 	cmd := exec.Command("git", "remote", "get-url", remoteName)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("not in a git repository or no '%s' remote", remoteName)
 	}
-	
+
 	remoteURL := strings.TrimSpace(string(output))
-	
+
 	// Parse GitHub URL patterns:
 	// https://github.com/owner/repo.git
 	// git@github.com:owner/repo.git
@@ -239,15 +239,15 @@ func getRepoInfo() (owner, repo string, err error) {
 	} else {
 		return "", "", fmt.Errorf("remote '%s' is not a GitHub repository", remoteName)
 	}
-	
+
 	// Remove .git suffix
 	repoPath = strings.TrimSuffix(repoPath, ".git")
-	
+
 	parts := strings.Split(repoPath, "/")
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("invalid GitHub repository format")
 	}
-	
+
 	return parts[0], parts[1], nil
 }
 
@@ -257,16 +257,16 @@ func hasUncommittedChanges() bool {
 	if err != nil {
 		return true // Assume changes if we can't check
 	}
-	
+
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	for _, line := range lines {
 		if len(line) < 2 {
 			continue
 		}
-		
+
 		// Check first two characters for status
 		// ' M' = modified, not staged
-		// 'M ' = modified, staged  
+		// 'M ' = modified, staged
 		// 'MM' = modified, staged and unstaged
 		// 'A ' = added, staged
 		// '??' = untracked (allowed)
@@ -275,13 +275,13 @@ func hasUncommittedChanges() bool {
 			return true // Has changes to tracked files or staged changes
 		}
 	}
-	
+
 	return false
 }
 
 func checkoutPRBranch(branchName, headRef, headSHA string) error {
 	remoteName := getRemoteName()
-	
+
 	// Check if local branch already exists
 	cmd := exec.Command("git", "rev-parse", "--verify", branchName)
 	if cmd.Run() == nil {
@@ -290,7 +290,7 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to checkout existing branch %s: %v", branchName, err)
 		}
-		
+
 		// Simply reset to the exact SHA we want (no need to fetch the branch)
 		cmd = exec.Command("git", "reset", "--hard", headSHA)
 		if err := cmd.Run(); err != nil {
@@ -299,7 +299,7 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 			if fetchErr := cmd.Run(); fetchErr != nil {
 				return fmt.Errorf("failed to fetch from remote and reset failed: reset=%v, fetch=%v", err, fetchErr)
 			}
-			
+
 			// Try reset again
 			cmd = exec.Command("git", "reset", "--hard", headSHA)
 			if err := cmd.Run(); err != nil {
@@ -315,7 +315,7 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 			if fetchErr := cmd.Run(); fetchErr != nil {
 				return fmt.Errorf("failed to fetch from remote and checkout failed: checkout=%v, fetch=%v", err, fetchErr)
 			}
-			
+
 			// Try checkout again
 			cmd = exec.Command("git", "checkout", "-b", branchName, headSHA)
 			if err := cmd.Run(); err != nil {
@@ -323,7 +323,7 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -361,18 +361,18 @@ func (f *FileWithComments) Parse(content string) error {
 	lines := strings.Split(content, "\n")
 	f.Lines = make([]string, 0)
 	f.Comments = make(map[int][]ReviewComment)
-	
+
 	commentPrefix := getCommentPrefix(f.Path)
 	isPRFile := (f.Path == PRCommentsFile)
-	
+
 	var pendingComments []ReviewComment
 	var currentComment *ReviewComment
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		isCommentLine := false
 		commentContent := ""
-		
+
 		if isPRFile {
 			// For PR comments file: check for rule headers or +: lines
 			rulePrefix := strings.Repeat(RuleChar, 7)
@@ -399,7 +399,7 @@ func (f *FileWithComments) Parse(content string) error {
 				}
 			}
 		}
-		
+
 		if isCommentLine && commentContent != "" {
 			// Parse comment content
 			if strings.HasPrefix(commentContent, NewCommentPrefix) {
@@ -419,15 +419,15 @@ func (f *FileWithComments) Parse(content string) error {
 				}
 				// Parse header with rule character separators
 				currentComment = &ReviewComment{
-					IsNew:  false,
-					Body:   "",
+					IsNew: false,
+					Body:  "",
 				}
-				
+
 				// For source files, strip leading rule characters first
 				headerContent := commentContent
 				// Strip any number of leading rule characters and space
 				headerContent = strings.TrimLeft(headerContent, RuleChar+" ")
-				
+
 				// Split by rule character separator
 				parts := strings.Split(headerContent, " "+RuleChar+" ")
 				if len(parts) >= 1 {
@@ -462,7 +462,7 @@ func (f *FileWithComments) Parse(content string) error {
 		} else if !isPRFile {
 			// This is a source code line (only for non-PR files)
 			f.Lines = append(f.Lines, line)
-			
+
 			// If we have pending comments, attach them to this line
 			if len(pendingComments) > 0 || currentComment != nil {
 				if currentComment != nil {
@@ -470,7 +470,7 @@ func (f *FileWithComments) Parse(content string) error {
 					currentComment = nil
 				}
 				lineNum := len(f.Lines) // 1-based line number for the line we just added
-				
+
 				// Fix up range comments - convert negative StartLine markers to actual line numbers
 				for i := range pendingComments {
 					if pendingComments[i].StartLine < 0 {
@@ -481,13 +481,13 @@ func (f *FileWithComments) Parse(content string) error {
 						pendingComments[i].Line = lineNum
 					}
 				}
-				
+
 				f.Comments[lineNum] = append(f.Comments[lineNum], pendingComments...)
 				pendingComments = nil
 			}
 		}
 	}
-	
+
 	// Handle any remaining comments (for PR files, attach to line 0)
 	if len(pendingComments) > 0 || currentComment != nil {
 		if currentComment != nil {
@@ -497,7 +497,7 @@ func (f *FileWithComments) Parse(content string) error {
 		if !isPRFile && len(f.Lines) > 0 {
 			attachLine = len(f.Lines) // Attach to last line if it's a source file
 		}
-		
+
 		// Fix up range comments for remaining comments too
 		for i := range pendingComments {
 			if pendingComments[i].StartLine < 0 && !isPRFile {
@@ -508,10 +508,10 @@ func (f *FileWithComments) Parse(content string) error {
 				pendingComments[i].Line = attachLine
 			}
 		}
-		
+
 		f.Comments[attachLine] = append(f.Comments[attachLine], pendingComments...)
 	}
-	
+
 	return nil
 }
 
@@ -531,7 +531,7 @@ func wrapText(text string, width int, indent string) []string {
 	// Split by existing newlines first to preserve them
 	paragraphs := strings.Split(text, "\n")
 	var result []string
-	
+
 	for _, paragraph := range paragraphs {
 		paragraph = strings.TrimSpace(paragraph)
 		if paragraph == "" {
@@ -539,19 +539,19 @@ func wrapText(text string, width int, indent string) []string {
 			result = append(result, "")
 			continue
 		}
-		
+
 		if len(paragraph) <= width {
 			result = append(result, paragraph)
 			continue
 		}
-		
+
 		// Word wrap this paragraph
 		words := strings.Fields(paragraph)
 		if len(words) == 0 {
 			result = append(result, paragraph)
 			continue
 		}
-		
+
 		currentLine := words[0]
 		for _, word := range words[1:] {
 			if len(currentLine)+len(word)+1 <= width {
@@ -561,12 +561,12 @@ func wrapText(text string, width int, indent string) []string {
 				currentLine = word
 			}
 		}
-		
+
 		if currentLine != "" {
 			result = append(result, currentLine)
 		}
 	}
-	
+
 	return result
 }
 
@@ -574,7 +574,7 @@ func (f *FileWithComments) Serialize() string {
 	var result strings.Builder
 	commentPrefix := getCommentPrefix(f.Path)
 	isPRFile := (f.Path == PRCommentsFile)
-	
+
 	if isPRFile {
 		// For PR comments file: serialize comments at line 0
 		if comments, exists := f.Comments[0]; exists {
@@ -582,14 +582,14 @@ func (f *FileWithComments) Serialize() string {
 				if i > 0 {
 					result.WriteString("\n\n")
 				}
-				
+
 				if comment.IsNew {
 					result.WriteString(NewCommentPrefix + comment.Body + "\n")
 				} else {
 					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
 					rule := createHorizontalRule(0, headerText, 7)
 					result.WriteString(rule + "\n")
-					
+
 					// Wrap and write body
 					wrappedLines := wrapText(comment.Body, MaxLineLength, "")
 					for _, line := range wrappedLines {
@@ -602,14 +602,14 @@ func (f *FileWithComments) Serialize() string {
 		// For source code files: serialize with comment prefixes
 		for i, line := range f.Lines {
 			result.WriteString(line)
-			
+
 			// Add any comments for this line (after the line)
 			if comments, exists := f.Comments[i+1]; exists { // GitHub uses 1-based line numbers
 				indent := getIndentation(line)
-				
+
 				for _, comment := range comments {
 					result.WriteString("\n")
-					
+
 					if comment.IsNew {
 						// New comment format: just the body with +: prefix
 						result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + NewCommentPrefix + comment.Body)
@@ -622,20 +622,20 @@ func (f *FileWithComments) Serialize() string {
 							rangeSize := comment.Line - comment.StartLine + 1
 							metadata = fmt.Sprintf(" [-%d]", rangeSize)
 						}
-						
+
 						headerText := formatCommentHeader(comment.Author, comment.CreatedAt, metadata)
 						prefixLen := len(indent + commentPrefix + " " + CommentMarker + " ")
 						rule := createHorizontalRule(prefixLen, headerText, LeadingDashes)
-						
+
 						result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + rule)
-						
+
 						// Wrapped body lines
 						markerSpace := " " + CommentMarker + " "
 						bodyWidth := MaxLineLength - len(indent) - len(commentPrefix) - len(markerSpace)
 						if bodyWidth < 20 {
 							bodyWidth = 20 // Minimum reasonable width
 						}
-						
+
 						wrappedLines := wrapText(comment.Body, bodyWidth, indent)
 						for _, wrappedLine := range wrappedLines {
 							result.WriteString("\n")
@@ -644,14 +644,14 @@ func (f *FileWithComments) Serialize() string {
 					}
 				}
 			}
-			
+
 			// Add newline after line (and any comments)
 			if i < len(f.Lines)-1 {
 				result.WriteString("\n")
 			}
 		}
 	}
-	
+
 	return result.String()
 }
 
@@ -670,7 +670,7 @@ func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullReque
 			delete(f.Comments, lineNum)
 		}
 	}
-	
+
 	// Add GitHub comments
 	for _, ghComment := range ghComments {
 		lineNum := ghComment.GetLine()
@@ -678,10 +678,10 @@ func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullReque
 		if ghComment.StartLine != nil {
 			startLine = ghComment.GetStartLine()
 		}
-		
+
 		// Detect file-level comments (GitHub sometimes puts them on line 0 or 1)
 		isFile := (lineNum <= 1 && ghComment.GetPath() != "" && ghComment.GetDiffHunk() == "")
-		
+
 		comment := ReviewComment{
 			ID:        ghComment.GetID(),
 			Line:      lineNum,
@@ -692,12 +692,12 @@ func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullReque
 			IsNew:     false,
 			IsFile:    isFile,
 		}
-		
+
 		// For file-level comments, always put them on line 1
 		if isFile {
 			comment.Line = 1
 		}
-		
+
 		f.Comments[comment.Line] = append(f.Comments[comment.Line], comment)
 	}
 }
@@ -713,7 +713,7 @@ func (f *FileWithComments) SyncWithGitHubIssueComments(ghComments []*github.Issu
 		}
 	}
 	f.Comments[0] = newComments
-	
+
 	// Add GitHub issue comments at line 0
 	for _, ghComment := range ghComments {
 		comment := ReviewComment{
@@ -734,13 +734,13 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 	if err != nil {
 		return fmt.Errorf("failed to fetch PR review comments: %v", err)
 	}
-	
+
 	// Get PR-level comments (issue comments on the PR)
 	prComments, _, err := client.Issues.ListComments(ctx, owner, repo, prNumber, nil)
 	if err != nil {
 		return fmt.Errorf("failed to fetch PR comments: %v", err)
 	}
-	
+
 	// Process PR-level comments first
 	if len(prComments) > 0 {
 		err := processPRLevelComments(PRCommentsFile, prComments)
@@ -748,7 +748,7 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 			return fmt.Errorf("failed to process PR comments: %v", err)
 		}
 	}
-	
+
 	// Group review comments by file
 	fileComments := make(map[string][]*github.PullRequestComment)
 	for _, comment := range reviewComments {
@@ -756,7 +756,7 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 			fileComments[comment.GetPath()] = append(fileComments[comment.GetPath()], comment)
 		}
 	}
-	
+
 	// Process each file with comments
 	for filePath, comments := range fileComments {
 		err := processFileComments(filePath, comments)
@@ -764,7 +764,7 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 			return fmt.Errorf("failed to process comments in %s: %v", filePath, err)
 		}
 	}
-	
+
 	fmt.Printf("Embedded comments in %d files", len(fileComments))
 	if len(prComments) > 0 {
 		fmt.Printf(" + %d PR comments", len(prComments))
@@ -779,17 +779,17 @@ func processFileComments(filePath string, ghComments []*github.PullRequestCommen
 	if err != nil {
 		return err
 	}
-	
+
 	// Parse into intermediate representation
 	fileWithComments := NewFileWithComments(filePath)
 	err = fileWithComments.Parse(string(content))
 	if err != nil {
 		return err
 	}
-	
+
 	// Sync with GitHub comments
 	fileWithComments.SyncWithGitHubComments(ghComments)
-	
+
 	// Write back to disk
 	serialized := fileWithComments.Serialize()
 	return os.WriteFile(filePath, []byte(serialized), 0644)
@@ -801,10 +801,10 @@ func processPRLevelComments(filePath string, ghComments []*github.IssueComment) 
 	if content, err := os.ReadFile(filePath); err == nil {
 		prComments.Parse(string(content))
 	}
-	
+
 	// Sync with GitHub comments
 	prComments.SyncWithGitHubIssueComments(ghComments)
-	
+
 	// Write back to disk
 	return os.WriteFile(filePath, []byte(prComments.Serialize()), 0644)
 }
@@ -812,15 +812,15 @@ func processPRLevelComments(filePath string, ghComments []*github.IssueComment) 
 func formatCommentHeader(author string, createdAt *time.Time, metadata string) string {
 	// Format: ───── author ─ date ─ metadata ──────────
 	parts := []string{author}
-	
+
 	if createdAt != nil {
 		parts = append(parts, createdAt.Format(TimeFormat))
 	}
-	
+
 	if metadata != "" {
 		parts = append(parts, strings.TrimSpace(metadata))
 	}
-	
+
 	return strings.Join(parts, " "+RuleChar+" ")
 }
 
@@ -829,10 +829,9 @@ func createHorizontalRule(prefixLen int, headerText string, leadingDashes int) s
 	if trailingDashCount < 3 {
 		trailingDashCount = 3
 	}
-	
+
 	return strings.Repeat(RuleChar, leadingDashes) + " " + headerText + " " + strings.Repeat(RuleChar, trailingDashCount)
 }
-
 
 func getCommentPrefix(filePath string) string {
 	ext := filepath.Ext(filePath)
@@ -856,27 +855,27 @@ func commitEmbeddedComments(prNumber int) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stage changes: %v", err)
 	}
-	
+
 	// Also add PR-COMMENTS.txt if it exists (might be new)
 	if _, err := os.Stat(PRCommentsFile); err == nil {
 		cmd = exec.Command("git", "add", PRCommentsFile)
 		cmd.Run() // Ignore errors, might already be staged
 	}
-	
+
 	// Check if there are any changes to commit
 	cmd = exec.Command("git", "diff", "--cached", "--quiet")
 	if cmd.Run() == nil {
 		// No changes staged, nothing to commit
 		return nil
 	}
-	
+
 	// Commit with descriptive message
 	commitMsg := fmt.Sprintf(CommitMsgTemplate, prNumber)
 	cmd = exec.Command("git", "commit", "-m", commitMsg)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to commit: %v", err)
 	}
-	
+
 	fmt.Printf("Committed embedded comments for PR #%d\n", prNumber)
 	return nil
 }

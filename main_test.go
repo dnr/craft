@@ -14,11 +14,11 @@ func TestFileWithComments_ParseAndSerialize_SourceFile(t *testing.T) {
 
 func hello() {
 	fmt.Println("Hello")
-// ⦒ +: This is a new comment I want to add
+// ❯ +: This is a new comment I want to add
 	return
 }
-// ⦒ ───── reviewer ─ 2024-01-15 14:30 ─────────────────────────────────── 
-// ⦒ This is a comment about the whole function.`
+// ❯ ───── reviewer ─ 2024-01-15 14:30 ───────────────────────────────────
+// ❯ This is a comment about the whole function.`
 
 	f := NewFileWithComments("test.go")
 	err := f.Parse(content)
@@ -44,14 +44,13 @@ func hello() {
 		}
 	}
 
-
 	// Check that comments were parsed correctly
 	// New comment should be on line 5 (after "return")
 	if len(f.Comments[5]) < 1 {
 		t.Errorf("Expected at least 1 comment on line 5, got %d", len(f.Comments[5]))
 		return
 	}
-	
+
 	// Find the new comment
 	var foundNew bool
 	for _, comment := range f.Comments[5] {
@@ -69,7 +68,7 @@ func hello() {
 		t.Errorf("Expected at least 1 comment on line 6, got %d", len(f.Comments[6]))
 		return
 	}
-	
+
 	var foundReviewer bool
 	for _, comment := range f.Comments[6] {
 		if !comment.IsNew && comment.Author == "reviewer" {
@@ -157,7 +156,7 @@ Another comment from a different user.`
 func TestFileWithComments_SyncWithGitHubComments(t *testing.T) {
 	f := NewFileWithComments("test.go")
 	f.Lines = []string{"package main", "func test() {}"}
-	
+
 	// Add a new comment that should be preserved
 	f.Comments[2] = []ReviewComment{
 		{IsNew: true, Body: "My new comment", Author: ""},
@@ -167,10 +166,10 @@ func TestFileWithComments_SyncWithGitHubComments(t *testing.T) {
 	createdAt := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ghComments := []*github.PullRequestComment{
 		{
-			ID:   github.Int64(123),
-			Line: github.Int(2),
-			User: &github.User{Login: github.String("reviewer")},
-			Body: github.String("This function needs documentation"),
+			ID:        github.Int64(123),
+			Line:      github.Int(2),
+			User:      &github.User{Login: github.String("reviewer")},
+			Body:      github.String("This function needs documentation"),
 			CreatedAt: &github.Timestamp{Time: createdAt},
 		},
 	}
@@ -204,7 +203,7 @@ func TestFileWithComments_SyncWithGitHubComments(t *testing.T) {
 
 func TestFileWithComments_SyncWithGitHubIssueComments(t *testing.T) {
 	f := NewPRComments()
-	
+
 	// Add a new PR comment that should be preserved
 	f.Comments[0] = []ReviewComment{
 		{IsNew: true, Body: "My new PR comment", Author: ""},
@@ -214,9 +213,9 @@ func TestFileWithComments_SyncWithGitHubIssueComments(t *testing.T) {
 	createdAt := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ghComments := []*github.IssueComment{
 		{
-			ID:   github.Int64(456),
-			User: &github.User{Login: github.String("alice")},
-			Body: github.String("LGTM! Nice work on this PR."),
+			ID:        github.Int64(456),
+			User:      &github.User{Login: github.String("alice")},
+			Body:      github.String("LGTM! Nice work on this PR."),
 			CreatedAt: &github.Timestamp{Time: createdAt},
 		},
 	}
@@ -250,14 +249,14 @@ func TestFileWithComments_SyncWithGitHubIssueComments(t *testing.T) {
 
 func TestWrapText_PreservesNewlines(t *testing.T) {
 	text := "First paragraph.\n\nSecond paragraph after blank line.\n- Bullet 1\n- Bullet 2"
-	
+
 	wrapped := wrapText(text, 50, "")
-	
+
 	// Should preserve paragraph breaks
 	if !strings.Contains(strings.Join(wrapped, "\n"), "\n\n") {
 		t.Error("Should preserve blank lines between paragraphs")
 	}
-	
+
 	// Should have bullet points on separate lines
 	joinedResult := strings.Join(wrapped, "\n")
 	if !strings.Contains(joinedResult, "- Bullet 1\n- Bullet 2") {
@@ -267,21 +266,21 @@ func TestWrapText_PreservesNewlines(t *testing.T) {
 
 func TestFormatCommentHeader(t *testing.T) {
 	createdAt := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	
+
 	// Test with date and metadata
 	header := formatCommentHeader("reviewer", &createdAt, "[file]")
 	expected := "reviewer ─ 2024-01-15 14:30 ─ [file]"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
-	
+
 	// Test without date
 	header = formatCommentHeader("alice", nil, "")
 	expected = "alice"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
-	
+
 	// Test with date but no metadata
 	header = formatCommentHeader("bob", &createdAt, "")
 	expected = "bob ─ 2024-01-15 14:30"
@@ -293,22 +292,22 @@ func TestFormatCommentHeader(t *testing.T) {
 func TestCreateHorizontalRule(t *testing.T) {
 	headerText := "reviewer ─ 2024-01-15 14:30"
 	rule := createHorizontalRule(10, headerText, 5)
-	
+
 	// Should start with 5 dashes
 	if !strings.HasPrefix(rule, strings.Repeat(RuleChar, 5)) {
 		t.Error("Should start with 5 rule characters")
 	}
-	
+
 	// Should contain the header text
 	if !strings.Contains(rule, headerText) {
 		t.Error("Should contain header text")
 	}
-	
+
 	// Should end with dashes
 	if !strings.HasSuffix(rule, RuleChar) {
 		t.Error("Should end with rule characters")
 	}
-	
+
 	// Should be a reasonable length (not empty, not too crazy long)
 	if len(rule) < 20 || len(rule) > 300 {
 		t.Errorf("Rule length should be reasonable, got %d chars", len(rule))
