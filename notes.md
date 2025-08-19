@@ -1,0 +1,31 @@
+# craft — code review tool
+
+- goal: use github code review without using the awful github ui
+- idea is to make it editor-agnostic, code review state is represented explicitly in file(s)
+- code under review is locally navigable, buildable, testable
+- github code review comments appear as special comments in the code
+- there can be editor integration to easily create new comments, reply to
+  existing ones, approve, etc.
+- this means the local files won't match the branch exactly, and the line number will be off
+  - Q: is that going to cause any problems?
+- general flow
+  - `craft get [<pr#>]`
+    - assume we're already in a git repo with github as a remote
+    - pulls head of PR branch into a local branch named for pr number (if already on a branch, can use just `get` to pull latest changes)
+    - switches to that branch (abort if local changes)
+    - gets inline PR comments, integrates them into comments in the code
+    - gets general PR comments, puts in PRMETA in repo root (along with sufficient metadata to send the review)
+  - user: opens files in vim, use fugitive difftool/diffsplit, add new comments
+  - `craft send`
+    - loads PRMETA, and loads all review comments from source files
+    - figures out what api calls to make to send everything
+    - prints out what will be sent
+    - if given `--go`, sends it
+    - saves new meta to PRMETA if necessary
+- choices to make
+  - rest vs graphql api
+    - graphql might be nice but it's unclear if everything can be done in it
+  - implementation language
+    - probably go or python would be most comfortable
+- references
+  - https://github.com/shurcooL/githubv4 - graphql client for go
