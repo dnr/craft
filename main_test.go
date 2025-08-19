@@ -268,21 +268,33 @@ func TestFormatCommentHeader(t *testing.T) {
 	createdAt := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 
 	// Test with date and metadata
-	header := formatCommentHeader("reviewer", &createdAt, "[file]")
+	r := ReviewComment{
+		Author:    "reviewer",
+		CreatedAt: &createdAt,
+		IsFile:    true,
+	}
+	header := r.Format()
 	expected := "reviewer ─ 2024-01-15 14:30 ─ [file]"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
 
 	// Test without date
-	header = formatCommentHeader("alice", nil, "")
+	r = ReviewComment{
+		Author: "alice",
+	}
+	header = r.Format()
 	expected = "alice"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
 
 	// Test with date but no metadata
-	header = formatCommentHeader("bob", &createdAt, "")
+	r = ReviewComment{
+		Author:    "bob",
+		CreatedAt: &createdAt,
+	}
+	header = r.Format()
 	expected = "bob ─ 2024-01-15 14:30"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)

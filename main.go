@@ -338,6 +338,30 @@ type ReviewComment struct {
 	IsFile    bool // True if this is a file-level comment
 }
 
+func (r *ReviewComment) Format() string {
+	// Format: ───── author ─ date ─ metadata ──────────
+
+	metadata := ""
+	if r.IsFile {
+		metadata = " [file]"
+	} else if r.StartLine > 0 && r.StartLine < r.Line {
+		rangeSize := r.Line - r.StartLine + 1
+		metadata = fmt.Sprintf(" [-%d]", rangeSize)
+	}
+
+	parts := []string{r.Author}
+
+	if r.CreatedAt != nil {
+		parts = append(parts, r.CreatedAt.Format(TimeFormat))
+	}
+
+	if metadata != "" {
+		parts = append(parts, strings.TrimSpace(metadata))
+	}
+
+	return strings.Join(parts, " "+RuleChar+" ")
+}
+
 type FileWithComments struct {
 	Path     string
 	Lines    []string
@@ -532,7 +556,7 @@ func (f *FileWithComments) Serialize() string {
 			if comment.IsNew {
 				result.WriteString(NewCommentPrefix + comment.Body + "\n")
 			} else {
-				headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
+				headerText := comment.Format()
 				rule := createHorizontalRule(0, headerText, 7)
 				result.WriteString(rule + "\n")
 
@@ -559,15 +583,7 @@ func (f *FileWithComments) Serialize() string {
 					result.WriteString(indent + languageComment + " " + CraftMarker + " " + NewCommentPrefix + comment.Body)
 				} else {
 					// Existing comment with header and wrapped body
-					metadata := ""
-					if comment.IsFile {
-						metadata = " [file]"
-					} else if comment.StartLine > 0 && comment.StartLine < comment.Line {
-						rangeSize := comment.Line - comment.StartLine + 1
-						metadata = fmt.Sprintf(" [-%d]", rangeSize)
-					}
-
-					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, metadata)
+					headerText := comment.Format()
 					prefixLen := len(indent + languageComment + " " + CraftMarker + " ")
 					rule := createHorizontalRule(prefixLen, headerText, LeadingDashes)
 
@@ -750,21 +766,6 @@ func processPRLevelComments(filePath string, ghComments []*github.IssueComment) 
 
 	// Write back to disk
 	return os.WriteFile(filePath, []byte(prComments.Serialize()), 0644)
-}
-
-func formatCommentHeader(author string, createdAt *time.Time, metadata string) string {
-	// Format: ───── author ─ date ─ metadata ──────────
-	parts := []string{author}
-
-	if createdAt != nil {
-		parts = append(parts, createdAt.Format(TimeFormat))
-	}
-
-	if metadata != "" {
-		parts = append(parts, strings.TrimSpace(metadata))
-	}
-
-	return strings.Join(parts, " "+RuleChar+" ")
 }
 
 func commitEmbeddedComments(prNumber int) error {
