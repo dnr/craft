@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
@@ -56,8 +57,21 @@ func handleGet(args []string) {
 			os.Exit(1)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "Error: PR number required\n")
-		os.Exit(1)
+		// Try to extract PR number from current branch name
+		currentBranch, err := getCurrentBranch()
+		if err == nil && strings.HasPrefix(currentBranch, "pr-") {
+			prNumberStr := strings.TrimPrefix(currentBranch, "pr-")
+			if extractedPR, err := strconv.Atoi(prNumberStr); err == nil {
+				prNumber = extractedPR
+				fmt.Printf("Using PR number %d from current branch '%s'\n", prNumber, currentBranch)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: PR number required\n")
+				os.Exit(1)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: PR number required\n")
+			os.Exit(1)
+		}
 	}
 	
 	client := createGitHubClient()
@@ -98,6 +112,12 @@ func handleGet(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error embedding comments: %v\n", err)
 		os.Exit(1)
+	}
+	
+	// Auto-commit the embedded comments to avoid uncommitted changes
+	err = commitEmbeddedComments(prNumber)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to commit embedded comments: %v\n", err)
 	}
 	
 	fmt.Println("PR ready for review!")
@@ -161,6 +181,15 @@ func createGitHubClient() *github.Client {
 	tc := oauth2.NewClient(ctx, ts)
 	
 	return github.NewClient(tc)
+}
+
+func getCurrentBranch() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func getRemoteName() string {
@@ -286,11 +315,12 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 }
 
 type ReviewComment struct {
-	ID       int64
-	Line     int
-	Author   string
-	Body     string
-	IsNew    bool // True if this is a new comment to be submitted
+	ID        int64
+	Line      int
+	Author    string
+	Body      string
+	CreatedAt *time.Time
+	IsNew     bool // True if this is a new comment to be submitted
 }
 
 type FileWithComments struct {
@@ -306,6 +336,8 @@ func (f *FileWithComments) Parse(content string) error {
 	
 	commentPrefix := getCommentPrefix(f.Path)
 	
+	var pendingComments []ReviewComment
+	
 	for _, line := range lines {
 		if strings.Contains(line, " ⦒ ") && strings.HasPrefix(strings.TrimSpace(line), commentPrefix) {
 			// This is an embedded comment
@@ -319,26 +351,80 @@ func (f *FileWithComments) Parse(content string) error {
 					comment.Author = ""
 					comment.Body = commentContent[3:]
 					comment.IsNew = true
+					pendingComments = append(pendingComments, comment)
 				} else if colonIdx := strings.Index(commentContent, ": "); colonIdx != -1 {
 					comment.Author = commentContent[:colonIdx]
 					comment.Body = commentContent[colonIdx+2:]
 					comment.IsNew = false
+					pendingComments = append(pendingComments, comment)
 				} else {
-					// Malformed comment, treat as body
-					comment.Body = commentContent
+					// This might be a continuation line of a multi-line comment
+					if len(pendingComments) > 0 {
+						// Add to the body of the last comment
+						lastIdx := len(pendingComments) - 1
+						if pendingComments[lastIdx].Body == "" {
+							pendingComments[lastIdx].Body = commentContent
+						} else {
+							pendingComments[lastIdx].Body += " " + commentContent
+						}
+					}
 				}
-				
-				// Associate with the previous source line
-				lineNum := len(f.Lines)
-				f.Comments[lineNum] = append(f.Comments[lineNum], comment)
 			}
 		} else {
 			// This is a source code line
 			f.Lines = append(f.Lines, line)
+			
+			// If we have pending comments, attach them to this line
+			if len(pendingComments) > 0 {
+				lineNum := len(f.Lines) // 1-based line number for the line we just added
+				f.Comments[lineNum] = append(f.Comments[lineNum], pendingComments...)
+				pendingComments = nil
+			}
 		}
 	}
 	
 	return nil
+}
+
+func getIndentation(line string) string {
+	var indent strings.Builder
+	for _, r := range line {
+		if r == ' ' || r == '\t' {
+			indent.WriteRune(r)
+		} else {
+			break
+		}
+	}
+	return indent.String()
+}
+
+func wrapText(text string, width int, indent string) []string {
+	if len(text) <= width {
+		return []string{text}
+	}
+	
+	var lines []string
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{text}
+	}
+	
+	currentLine := words[0]
+	for _, word := range words[1:] {
+		// Account for indent + comment prefix + space
+		if len(currentLine)+len(word)+1 <= width {
+			currentLine += " " + word
+		} else {
+			lines = append(lines, currentLine)
+			currentLine = word
+		}
+	}
+	
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+	
+	return lines
 }
 
 func (f *FileWithComments) Serialize() string {
@@ -347,19 +433,59 @@ func (f *FileWithComments) Serialize() string {
 	
 	for i, line := range f.Lines {
 		result.WriteString(line)
-		result.WriteString("\n")
 		
-		// Add any comments for this line
+		// Add any comments for this line (after the line)
 		if comments, exists := f.Comments[i+1]; exists { // GitHub uses 1-based line numbers
+			indent := getIndentation(line)
+			
 			for _, comment := range comments {
-				result.WriteString(commentPrefix + " ⦒ ")
-				if comment.IsNew {
-					result.WriteString("+: " + comment.Body)
-				} else {
-					result.WriteString(comment.Author + ": " + comment.Body)
-				}
 				result.WriteString("\n")
+				
+				if comment.IsNew {
+					// New comment format: just the body with +: prefix
+					result.WriteString(indent + commentPrefix + " ⦒ +: " + comment.Body)
+				} else {
+					// Existing comment with header and wrapped body
+					dateStr := ""
+					if comment.CreatedAt != nil {
+						dateStr = comment.CreatedAt.Format("2006-01-02 15:04")
+					}
+					
+					// Header line with horizontal rule
+					headerText := comment.Author
+					if dateStr != "" {
+						headerText += " (" + dateStr + ")"
+					}
+					headerText += ":"
+					
+					// Calculate remaining space for dashes
+					prefixLen := len(indent + commentPrefix + " ⦒ ")
+					availableWidth := 100 - prefixLen
+					dashCount := availableWidth - len(headerText) - 1 // -1 for space before dashes
+					if dashCount < 3 {
+						dashCount = 3 // Minimum dashes
+					}
+					
+					result.WriteString(indent + commentPrefix + " ⦒ " + headerText + " " + strings.Repeat("─", dashCount))
+					
+					// Wrapped body lines
+					bodyWidth := 100 - len(indent) - len(commentPrefix) - 3 // " ⦒ "
+					if bodyWidth < 20 {
+						bodyWidth = 20 // Minimum reasonable width
+					}
+					
+					wrappedLines := wrapText(comment.Body, bodyWidth, indent)
+					for _, wrappedLine := range wrappedLines {
+						result.WriteString("\n")
+						result.WriteString(indent + commentPrefix + " ⦒ " + wrappedLine)
+					}
+				}
 			}
+		}
+		
+		// Add newline after line (and any comments)
+		if i < len(f.Lines)-1 {
+			result.WriteString("\n")
 		}
 	}
 	
@@ -386,11 +512,12 @@ func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullReque
 	for _, ghComment := range ghComments {
 		lineNum := ghComment.GetLine()
 		comment := ReviewComment{
-			ID:     ghComment.GetID(),
-			Line:   lineNum,
-			Author: ghComment.GetUser().GetLogin(),
-			Body:   ghComment.GetBody(),
-			IsNew:  false,
+			ID:        ghComment.GetID(),
+			Line:      lineNum,
+			Author:    ghComment.GetUser().GetLogin(),
+			Body:      ghComment.GetBody(),
+			CreatedAt: ghComment.CreatedAt.GetTime(),
+			IsNew:     false,
 		}
 		f.Comments[lineNum] = append(f.Comments[lineNum], comment)
 	}
@@ -459,4 +586,29 @@ func getCommentPrefix(filePath string) string {
 	default:
 		return "#" // Default fallback
 	}
+}
+
+func commitEmbeddedComments(prNumber int) error {
+	// Add all modified files
+	cmd := exec.Command("git", "add", "-u") // Only add tracked files that were modified
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to stage changes: %v", err)
+	}
+	
+	// Check if there are any changes to commit
+	cmd = exec.Command("git", "diff", "--cached", "--quiet")
+	if cmd.Run() == nil {
+		// No changes staged, nothing to commit
+		return nil
+	}
+	
+	// Commit with descriptive message
+	commitMsg := fmt.Sprintf("craft: embed PR #%d review comments", prNumber)
+	cmd = exec.Command("git", "commit", "-m", commitMsg)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to commit: %v", err)
+	}
+	
+	fmt.Printf("Committed embedded comments for PR #%d\n", prNumber)
+	return nil
 }
