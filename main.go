@@ -344,59 +344,131 @@ type FileWithComments struct {
 	Comments map[int][]ReviewComment // Line number -> comments
 }
 
+func NewFileWithComments(path string) *FileWithComments {
+	return &FileWithComments{
+		Path:     path,
+		Lines:    make([]string, 0),
+		Comments: make(map[int][]ReviewComment),
+	}
+}
+
+func NewPRComments() *FileWithComments {
+	// PR comments are just FileWithComments with no source lines and no comment prefix
+	return NewFileWithComments(PRCommentsFile)
+}
+
 func (f *FileWithComments) Parse(content string) error {
 	lines := strings.Split(content, "\n")
 	f.Lines = make([]string, 0)
 	f.Comments = make(map[int][]ReviewComment)
 	
 	commentPrefix := getCommentPrefix(f.Path)
+	isPRFile := (f.Path == PRCommentsFile)
 	
 	var pendingComments []ReviewComment
+	var currentComment *ReviewComment
 	
 	for _, line := range lines {
-		if strings.Contains(line, " "+CommentMarker+" ") && strings.HasPrefix(strings.TrimSpace(line), commentPrefix) {
-			// This is an embedded comment
-			content := strings.TrimSpace(line)
-			markerWithSpaces := " " + CommentMarker + " "
-			if idx := strings.Index(content, markerWithSpaces); idx != -1 {
-				commentContent := content[idx+len(markerWithSpaces):]
-				
-				// Parse comment format: "author: body" or "+: body" for new comments
-				var comment ReviewComment
-				if strings.HasPrefix(commentContent, NewCommentPrefix) {
-					comment.Author = ""
-					comment.Body = commentContent[len(NewCommentPrefix):]
-					comment.IsNew = true
-					pendingComments = append(pendingComments, comment)
-				} else if colonIdx := strings.Index(commentContent, ": "); colonIdx != -1 {
-					comment.Author = commentContent[:colonIdx]
-					comment.Body = commentContent[colonIdx+2:]
-					comment.IsNew = false
-					pendingComments = append(pendingComments, comment)
-				} else {
-					// This might be a continuation line of a multi-line comment
-					if len(pendingComments) > 0 {
-						// Add to the body of the last comment
-						lastIdx := len(pendingComments) - 1
-						if pendingComments[lastIdx].Body == "" {
-							pendingComments[lastIdx].Body = commentContent
-						} else {
-							pendingComments[lastIdx].Body += "\n" + commentContent
-						}
-					}
-				}
+		trimmed := strings.TrimSpace(line)
+		isCommentLine := false
+		commentContent := ""
+		
+		if isPRFile {
+			// For PR comments file: check for rule headers or +: lines
+			rulePrefix := strings.Repeat(RuleChar, 7)
+			if strings.HasPrefix(trimmed, rulePrefix) {
+				// This is a comment header line
+				isCommentLine = true
+				commentContent = strings.TrimLeft(trimmed, RuleChar+" ")
+			} else if strings.HasPrefix(trimmed, NewCommentPrefix) {
+				// This is a new comment line
+				isCommentLine = true
+				commentContent = NewCommentPrefix + strings.TrimPrefix(trimmed, NewCommentPrefix)
+			} else if currentComment != nil && trimmed != "" {
+				// This is a continuation line of a comment body
+				isCommentLine = true
+				commentContent = trimmed
 			}
 		} else {
-			// This is a source code line
+			// For source code files: check for embedded comments with prefix
+			if strings.Contains(line, " "+CommentMarker+" ") && strings.HasPrefix(trimmed, commentPrefix) {
+				isCommentLine = true
+				markerWithSpaces := " " + CommentMarker + " "
+				if idx := strings.Index(trimmed, markerWithSpaces); idx != -1 {
+					commentContent = trimmed[idx+len(markerWithSpaces):]
+				}
+			}
+		}
+		
+		if isCommentLine && commentContent != "" {
+			// Parse comment content
+			if strings.HasPrefix(commentContent, NewCommentPrefix) {
+				// Save previous comment if exists
+				if currentComment != nil {
+					pendingComments = append(pendingComments, *currentComment)
+				}
+				currentComment = &ReviewComment{
+					IsNew:  true,
+					Body:   commentContent[len(NewCommentPrefix):],
+					Author: "",
+				}
+			} else if colonIdx := strings.Index(commentContent, ": "); colonIdx != -1 {
+				// Save previous comment if exists
+				if currentComment != nil {
+					pendingComments = append(pendingComments, *currentComment)
+				}
+				// Parse header for existing comment
+				currentComment = &ReviewComment{
+					IsNew:  false,
+					Body:   "",
+				}
+				beforeColon := commentContent[:colonIdx]
+				// Look for (date) pattern
+				if parenStart := strings.LastIndex(beforeColon, " ("); parenStart != -1 {
+					if parenEnd := strings.Index(beforeColon[parenStart:], ")"); parenEnd != -1 {
+						currentComment.Author = strings.TrimSpace(beforeColon[:parenStart])
+						dateStr := beforeColon[parenStart+2 : parenStart+parenEnd]
+						if t, err := time.Parse(TimeFormat, dateStr); err == nil {
+							currentComment.CreatedAt = &t
+						}
+					}
+				} else {
+					currentComment.Author = strings.TrimSpace(beforeColon)
+				}
+			} else if currentComment != nil {
+				// This is a continuation line
+				if currentComment.Body != "" {
+					currentComment.Body += "\n"
+				}
+				currentComment.Body += commentContent
+			}
+		} else if !isPRFile {
+			// This is a source code line (only for non-PR files)
 			f.Lines = append(f.Lines, line)
 			
 			// If we have pending comments, attach them to this line
-			if len(pendingComments) > 0 {
+			if len(pendingComments) > 0 || currentComment != nil {
+				if currentComment != nil {
+					pendingComments = append(pendingComments, *currentComment)
+					currentComment = nil
+				}
 				lineNum := len(f.Lines) // 1-based line number for the line we just added
 				f.Comments[lineNum] = append(f.Comments[lineNum], pendingComments...)
 				pendingComments = nil
 			}
 		}
+	}
+	
+	// Handle any remaining comments (for PR files, attach to line 0)
+	if len(pendingComments) > 0 || currentComment != nil {
+		if currentComment != nil {
+			pendingComments = append(pendingComments, *currentComment)
+		}
+		attachLine := 0
+		if !isPRFile && len(f.Lines) > 0 {
+			attachLine = len(f.Lines) // Attach to last line if it's a source file
+		}
+		f.Comments[attachLine] = append(f.Comments[attachLine], pendingComments...)
 	}
 	
 	return nil
@@ -460,55 +532,82 @@ func wrapText(text string, width int, indent string) []string {
 func (f *FileWithComments) Serialize() string {
 	var result strings.Builder
 	commentPrefix := getCommentPrefix(f.Path)
+	isPRFile := (f.Path == PRCommentsFile)
 	
-	for i, line := range f.Lines {
-		result.WriteString(line)
-		
-		// Add any comments for this line (after the line)
-		if comments, exists := f.Comments[i+1]; exists { // GitHub uses 1-based line numbers
-			indent := getIndentation(line)
-			
-			for _, comment := range comments {
-				result.WriteString("\n")
+	if isPRFile {
+		// For PR comments file: serialize comments at line 0
+		if comments, exists := f.Comments[0]; exists {
+			for i, comment := range comments {
+				if i > 0 {
+					result.WriteString("\n\n")
+				}
 				
 				if comment.IsNew {
-					// New comment format: just the body with +: prefix
-					result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + NewCommentPrefix + comment.Body)
+					result.WriteString(NewCommentPrefix + comment.Body + "\n")
 				} else {
-					// Existing comment with header and wrapped body
-					metadata := ""
-					if comment.IsFile {
-						metadata = " [file]"
-					} else if comment.StartLine > 0 && comment.StartLine < comment.Line {
-						rangeSize := comment.Line - comment.StartLine + 1
-						metadata = fmt.Sprintf(" [-%d]", rangeSize)
-					}
+					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
+					rule := createHorizontalRule(0, headerText, 7)
+					result.WriteString(rule + "\n")
 					
-					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, metadata)
-					prefixLen := len(indent + commentPrefix + " " + CommentMarker + " ")
-					rule := createHorizontalRule(prefixLen, headerText, LeadingDashes)
-					
-					result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + rule)
-					
-					// Wrapped body lines
-					markerSpace := " " + CommentMarker + " "
-					bodyWidth := MaxLineLength - len(indent) - len(commentPrefix) - len(markerSpace)
-					if bodyWidth < 20 {
-						bodyWidth = 20 // Minimum reasonable width
-					}
-					
-					wrappedLines := wrapText(comment.Body, bodyWidth, indent)
-					for _, wrappedLine := range wrappedLines {
-						result.WriteString("\n")
-						result.WriteString(indent + commentPrefix + markerSpace + wrappedLine)
+					// Wrap and write body
+					wrappedLines := wrapText(comment.Body, MaxLineLength, "")
+					for _, line := range wrappedLines {
+						result.WriteString(line + "\n")
 					}
 				}
 			}
 		}
-		
-		// Add newline after line (and any comments)
-		if i < len(f.Lines)-1 {
-			result.WriteString("\n")
+	} else {
+		// For source code files: serialize with comment prefixes
+		for i, line := range f.Lines {
+			result.WriteString(line)
+			
+			// Add any comments for this line (after the line)
+			if comments, exists := f.Comments[i+1]; exists { // GitHub uses 1-based line numbers
+				indent := getIndentation(line)
+				
+				for _, comment := range comments {
+					result.WriteString("\n")
+					
+					if comment.IsNew {
+						// New comment format: just the body with +: prefix
+						result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + NewCommentPrefix + comment.Body)
+					} else {
+						// Existing comment with header and wrapped body
+						metadata := ""
+						if comment.IsFile {
+							metadata = " [file]"
+						} else if comment.StartLine > 0 && comment.StartLine < comment.Line {
+							rangeSize := comment.Line - comment.StartLine + 1
+							metadata = fmt.Sprintf(" [-%d]", rangeSize)
+						}
+						
+						headerText := formatCommentHeader(comment.Author, comment.CreatedAt, metadata)
+						prefixLen := len(indent + commentPrefix + " " + CommentMarker + " ")
+						rule := createHorizontalRule(prefixLen, headerText, LeadingDashes)
+						
+						result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + rule)
+						
+						// Wrapped body lines
+						markerSpace := " " + CommentMarker + " "
+						bodyWidth := MaxLineLength - len(indent) - len(commentPrefix) - len(markerSpace)
+						if bodyWidth < 20 {
+							bodyWidth = 20 // Minimum reasonable width
+						}
+						
+						wrappedLines := wrapText(comment.Body, bodyWidth, indent)
+						for _, wrappedLine := range wrappedLines {
+							result.WriteString("\n")
+							result.WriteString(indent + commentPrefix + markerSpace + wrappedLine)
+						}
+					}
+				}
+			}
+			
+			// Add newline after line (and any comments)
+			if i < len(f.Lines)-1 {
+				result.WriteString("\n")
+			}
 		}
 	}
 	
@@ -559,6 +658,32 @@ func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullReque
 		}
 		
 		f.Comments[comment.Line] = append(f.Comments[comment.Line], comment)
+	}
+}
+
+func (f *FileWithComments) SyncWithGitHubIssueComments(ghComments []*github.IssueComment) {
+	// For PR-level comments - clear existing non-new comments at line 0
+	var newComments []ReviewComment
+	if comments, exists := f.Comments[0]; exists {
+		for _, comment := range comments {
+			if comment.IsNew {
+				newComments = append(newComments, comment)
+			}
+		}
+	}
+	f.Comments[0] = newComments
+	
+	// Add GitHub issue comments at line 0
+	for _, ghComment := range ghComments {
+		comment := ReviewComment{
+			ID:        ghComment.GetID(),
+			Line:      0,
+			Author:    ghComment.GetUser().GetLogin(),
+			Body:      ghComment.GetBody(),
+			CreatedAt: ghComment.CreatedAt.GetTime(),
+			IsNew:     false,
+		}
+		f.Comments[0] = append(f.Comments[0], comment)
 	}
 }
 
@@ -615,7 +740,7 @@ func processFileComments(filePath string, ghComments []*github.PullRequestCommen
 	}
 	
 	// Parse into intermediate representation
-	fileWithComments := &FileWithComments{Path: filePath}
+	fileWithComments := NewFileWithComments(filePath)
 	err = fileWithComments.Parse(string(content))
 	if err != nil {
 		return err
@@ -631,13 +756,13 @@ func processFileComments(filePath string, ghComments []*github.PullRequestCommen
 
 func processPRLevelComments(filePath string, ghComments []*github.IssueComment) error {
 	// Read existing PR comments file if it exists
-	prComments := &PRComments{}
+	prComments := NewPRComments()
 	if content, err := os.ReadFile(filePath); err == nil {
 		prComments.Parse(string(content))
 	}
 	
 	// Sync with GitHub comments
-	prComments.SyncWithGitHubComments(ghComments)
+	prComments.SyncWithGitHubIssueComments(ghComments)
 	
 	// Write back to disk
 	return os.WriteFile(filePath, []byte(prComments.Serialize()), 0644)
@@ -667,125 +792,6 @@ func createHorizontalRule(prefixLen int, headerText string, leadingDashes int) s
 	return strings.Repeat(RuleChar, leadingDashes) + " " + headerText + " " + strings.Repeat(RuleChar, trailingDashCount)
 }
 
-type PRComments struct {
-	Comments []ReviewComment
-}
-
-func (pr *PRComments) Parse(content string) error {
-	lines := strings.Split(content, "\n")
-	pr.Comments = make([]ReviewComment, 0)
-	
-	var currentComment *ReviewComment
-	
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		
-		// Check for header line (starts with dashes)
-		rulePrefix := strings.Repeat(RuleChar, 7) // 7 dashes for PR comment headers
-		if strings.HasPrefix(trimmed, rulePrefix) {
-			// Save previous comment if exists
-			if currentComment != nil {
-				pr.Comments = append(pr.Comments, *currentComment)
-			}
-			
-			// Parse new header
-			currentComment = &ReviewComment{
-				IsNew: false,
-				Body:  "",
-			}
-			
-			// Extract author and date from header
-			headerContent := strings.TrimLeft(trimmed, RuleChar+" ")
-			if colonIdx := strings.LastIndex(headerContent, ":"); colonIdx != -1 {
-				beforeColon := headerContent[:colonIdx]
-				// Look for (date) pattern
-				if parenStart := strings.LastIndex(beforeColon, " ("); parenStart != -1 {
-					if parenEnd := strings.Index(beforeColon[parenStart:], ")"); parenEnd != -1 {
-						currentComment.Author = strings.TrimSpace(beforeColon[:parenStart])
-						dateStr := beforeColon[parenStart+2 : parenStart+parenEnd]
-						if t, err := time.Parse(TimeFormat, dateStr); err == nil {
-							currentComment.CreatedAt = &t
-						}
-					}
-				} else {
-					currentComment.Author = strings.TrimSpace(beforeColon)
-				}
-			}
-		} else if strings.HasPrefix(trimmed, NewCommentPrefix) {
-			// New comment
-			if currentComment != nil {
-				pr.Comments = append(pr.Comments, *currentComment)
-			}
-			currentComment = &ReviewComment{
-				IsNew:  true,
-				Body:   strings.TrimPrefix(trimmed, NewCommentPrefix),
-				Author: "",
-			}
-		} else if currentComment != nil && trimmed != "" {
-			// Comment body line
-			if currentComment.Body != "" {
-				currentComment.Body += "\n"
-			}
-			currentComment.Body += trimmed
-		}
-	}
-	
-	// Don't forget the last comment
-	if currentComment != nil {
-		pr.Comments = append(pr.Comments, *currentComment)
-	}
-	
-	return nil
-}
-
-func (pr *PRComments) Serialize() string {
-	var result strings.Builder
-	
-	for i, comment := range pr.Comments {
-		if i > 0 {
-			result.WriteString("\n\n")
-		}
-		
-		if comment.IsNew {
-			result.WriteString(NewCommentPrefix + comment.Body + "\n")
-		} else {
-			headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
-			rule := createHorizontalRule(0, headerText, 7)
-			result.WriteString(rule + "\n")
-			
-			// Wrap and write body
-			wrappedLines := wrapText(comment.Body, MaxLineLength, "")
-			for _, line := range wrappedLines {
-				result.WriteString(line + "\n")
-			}
-		}
-	}
-	
-	return result.String()
-}
-
-func (pr *PRComments) SyncWithGitHubComments(ghComments []*github.IssueComment) {
-	// Clear existing non-new comments
-	var newComments []ReviewComment
-	for _, comment := range pr.Comments {
-		if comment.IsNew {
-			newComments = append(newComments, comment)
-		}
-	}
-	pr.Comments = newComments
-	
-	// Add GitHub comments
-	for _, ghComment := range ghComments {
-		comment := ReviewComment{
-			ID:        ghComment.GetID(),
-			Author:    ghComment.GetUser().GetLogin(),
-			Body:      ghComment.GetBody(),
-			CreatedAt: ghComment.CreatedAt.GetTime(),
-			IsNew:     false,
-		}
-		pr.Comments = append(pr.Comments, comment)
-	}
-}
 
 func getCommentPrefix(filePath string) string {
 	ext := filepath.Ext(filePath)
