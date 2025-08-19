@@ -317,10 +317,12 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 type ReviewComment struct {
 	ID        int64
 	Line      int
+	StartLine int // For range comments, the starting line (0 if not a range)
 	Author    string
 	Body      string
 	CreatedAt *time.Time
 	IsNew     bool // True if this is a new comment to be submitted
+	IsFile    bool // True if this is a file-level comment
 }
 
 type FileWithComments struct {
@@ -446,26 +448,19 @@ func (f *FileWithComments) Serialize() string {
 					result.WriteString(indent + commentPrefix + " ⦒ +: " + comment.Body)
 				} else {
 					// Existing comment with header and wrapped body
-					dateStr := ""
-					if comment.CreatedAt != nil {
-						dateStr = comment.CreatedAt.Format("2006-01-02 15:04")
+					metadata := ""
+					if comment.IsFile {
+						metadata = " [file]"
+					} else if comment.StartLine > 0 && comment.StartLine < comment.Line {
+						rangeSize := comment.Line - comment.StartLine + 1
+						metadata = fmt.Sprintf(" [-%d]", rangeSize)
 					}
 					
-					// Header line with horizontal rule (5 dashes before, rest after)
-					headerText := comment.Author
-					if dateStr != "" {
-						headerText += " (" + dateStr + ")"
-					}
-					headerText += ":"
+					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, metadata)
+					prefixLen := len(indent + commentPrefix + " ⦒ ")
+					rule := createHorizontalRule(prefixLen, headerText, 5)
 					
-					// Calculate remaining space for trailing dashes
-					prefixLen := len(indent + commentPrefix + " ⦒ ───── ")
-					trailingDashCount := 100 - prefixLen - len(headerText) - 1 // -1 for space before trailing dashes
-					if trailingDashCount < 3 {
-						trailingDashCount = 3 // Minimum trailing dashes
-					}
-					
-					result.WriteString(indent + commentPrefix + " ⦒ ───── " + headerText + " " + strings.Repeat("─", trailingDashCount))
+					result.WriteString(indent + commentPrefix + " ⦒ " + rule)
 					
 					// Wrapped body lines
 					bodyWidth := 100 - len(indent) - len(commentPrefix) - 3 // " ⦒ "
@@ -510,28 +505,58 @@ func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullReque
 	// Add GitHub comments
 	for _, ghComment := range ghComments {
 		lineNum := ghComment.GetLine()
+		startLine := 0
+		if ghComment.StartLine != nil {
+			startLine = ghComment.GetStartLine()
+		}
+		
+		// Detect file-level comments (GitHub sometimes puts them on line 0 or 1)
+		isFile := (lineNum <= 1 && ghComment.GetPath() != "" && ghComment.GetDiffHunk() == "")
+		
 		comment := ReviewComment{
 			ID:        ghComment.GetID(),
 			Line:      lineNum,
+			StartLine: startLine,
 			Author:    ghComment.GetUser().GetLogin(),
 			Body:      ghComment.GetBody(),
 			CreatedAt: ghComment.CreatedAt.GetTime(),
 			IsNew:     false,
+			IsFile:    isFile,
 		}
-		f.Comments[lineNum] = append(f.Comments[lineNum], comment)
+		
+		// For file-level comments, always put them on line 1
+		if isFile {
+			comment.Line = 1
+		}
+		
+		f.Comments[comment.Line] = append(f.Comments[comment.Line], comment)
 	}
 }
 
 func embedPRComments(client *github.Client, ctx context.Context, owner, repo string, prNumber int) error {
 	// Get PR review comments (inline comments on code)
-	comments, _, err := client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
+	reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
+	if err != nil {
+		return fmt.Errorf("failed to fetch PR review comments: %v", err)
+	}
+	
+	// Get PR-level comments (issue comments on the PR)
+	prComments, _, err := client.Issues.ListComments(ctx, owner, repo, prNumber, nil)
 	if err != nil {
 		return fmt.Errorf("failed to fetch PR comments: %v", err)
 	}
 	
-	// Group comments by file
+	// Process PR-level comments first
+	if len(prComments) > 0 {
+		err := processPRLevelComments("PR-COMMENTS.txt", prComments)
+		if err != nil {
+			return fmt.Errorf("failed to process PR comments: %v", err)
+		}
+	}
+	
+	// Group review comments by file
 	fileComments := make(map[string][]*github.PullRequestComment)
-	for _, comment := range comments {
+	for _, comment := range reviewComments {
 		if comment.GetPath() != "" {
 			fileComments[comment.GetPath()] = append(fileComments[comment.GetPath()], comment)
 		}
@@ -545,7 +570,11 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 		}
 	}
 	
-	fmt.Printf("Embedded comments in %d files\n", len(fileComments))
+	fmt.Printf("Embedded comments in %d files", len(fileComments))
+	if len(prComments) > 0 {
+		fmt.Printf(" + %d PR comments", len(prComments))
+	}
+	fmt.Println()
 	return nil
 }
 
@@ -569,6 +598,163 @@ func processFileComments(filePath string, ghComments []*github.PullRequestCommen
 	// Write back to disk
 	serialized := fileWithComments.Serialize()
 	return os.WriteFile(filePath, []byte(serialized), 0644)
+}
+
+func processPRLevelComments(filePath string, ghComments []*github.IssueComment) error {
+	// Read existing PR comments file if it exists
+	prComments := &PRComments{}
+	if content, err := os.ReadFile(filePath); err == nil {
+		prComments.Parse(string(content))
+	}
+	
+	// Sync with GitHub comments
+	prComments.SyncWithGitHubComments(ghComments)
+	
+	// Write back to disk
+	return os.WriteFile(filePath, []byte(prComments.Serialize()), 0644)
+}
+
+func formatCommentHeader(author string, createdAt *time.Time, metadata string) string {
+	dateStr := ""
+	if createdAt != nil {
+		dateStr = createdAt.Format("2006-01-02 15:04")
+	}
+	
+	headerText := author
+	if dateStr != "" {
+		headerText += " (" + dateStr + ")"
+	}
+	headerText += ":"
+	
+	return headerText + metadata
+}
+
+func createHorizontalRule(prefixLen int, headerText string, leadingDashes int) string {
+	trailingDashCount := 100 - prefixLen - leadingDashes - len(headerText) - 2 // -2 for spaces
+	if trailingDashCount < 3 {
+		trailingDashCount = 3
+	}
+	
+	return strings.Repeat("─", leadingDashes) + " " + headerText + " " + strings.Repeat("─", trailingDashCount)
+}
+
+type PRComments struct {
+	Comments []ReviewComment
+}
+
+func (pr *PRComments) Parse(content string) error {
+	lines := strings.Split(content, "\n")
+	pr.Comments = make([]ReviewComment, 0)
+	
+	var currentComment *ReviewComment
+	
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		
+		// Check for header line (starts with dashes)
+		if strings.HasPrefix(trimmed, "─────── ") || strings.HasPrefix(trimmed, "───────") {
+			// Save previous comment if exists
+			if currentComment != nil {
+				pr.Comments = append(pr.Comments, *currentComment)
+			}
+			
+			// Parse new header
+			currentComment = &ReviewComment{
+				IsNew: false,
+				Body:  "",
+			}
+			
+			// Extract author and date from header
+			headerContent := strings.TrimLeft(trimmed, "─ ")
+			if colonIdx := strings.LastIndex(headerContent, ":"); colonIdx != -1 {
+				beforeColon := headerContent[:colonIdx]
+				// Look for (date) pattern
+				if parenStart := strings.LastIndex(beforeColon, " ("); parenStart != -1 {
+					if parenEnd := strings.Index(beforeColon[parenStart:], ")"); parenEnd != -1 {
+						currentComment.Author = strings.TrimSpace(beforeColon[:parenStart])
+						dateStr := beforeColon[parenStart+2 : parenStart+parenEnd]
+						if t, err := time.Parse("2006-01-02 15:04", dateStr); err == nil {
+							currentComment.CreatedAt = &t
+						}
+					}
+				} else {
+					currentComment.Author = strings.TrimSpace(beforeColon)
+				}
+			}
+		} else if strings.HasPrefix(trimmed, "+: ") {
+			// New comment
+			if currentComment != nil {
+				pr.Comments = append(pr.Comments, *currentComment)
+			}
+			currentComment = &ReviewComment{
+				IsNew:  true,
+				Body:   strings.TrimPrefix(trimmed, "+: "),
+				Author: "",
+			}
+		} else if currentComment != nil && trimmed != "" {
+			// Comment body line
+			if currentComment.Body != "" {
+				currentComment.Body += " "
+			}
+			currentComment.Body += trimmed
+		}
+	}
+	
+	// Don't forget the last comment
+	if currentComment != nil {
+		pr.Comments = append(pr.Comments, *currentComment)
+	}
+	
+	return nil
+}
+
+func (pr *PRComments) Serialize() string {
+	var result strings.Builder
+	
+	for i, comment := range pr.Comments {
+		if i > 0 {
+			result.WriteString("\n\n")
+		}
+		
+		if comment.IsNew {
+			result.WriteString("+: " + comment.Body + "\n")
+		} else {
+			headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
+			rule := createHorizontalRule(0, headerText, 7)
+			result.WriteString(rule + "\n")
+			
+			// Wrap and write body
+			wrappedLines := wrapText(comment.Body, 100, "")
+			for _, line := range wrappedLines {
+				result.WriteString(line + "\n")
+			}
+		}
+	}
+	
+	return result.String()
+}
+
+func (pr *PRComments) SyncWithGitHubComments(ghComments []*github.IssueComment) {
+	// Clear existing non-new comments
+	var newComments []ReviewComment
+	for _, comment := range pr.Comments {
+		if comment.IsNew {
+			newComments = append(newComments, comment)
+		}
+	}
+	pr.Comments = newComments
+	
+	// Add GitHub comments
+	for _, ghComment := range ghComments {
+		comment := ReviewComment{
+			ID:        ghComment.GetID(),
+			Author:    ghComment.GetUser().GetLogin(),
+			Body:      ghComment.GetBody(),
+			CreatedAt: ghComment.CreatedAt.GetTime(),
+			IsNew:     false,
+		}
+		pr.Comments = append(pr.Comments, comment)
+	}
 }
 
 func getCommentPrefix(filePath string) string {
