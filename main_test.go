@@ -85,7 +85,7 @@ func hello() {
 	if !strings.Contains(serialized, "package main") {
 		t.Error("Serialized content should contain source code")
 	}
-	if !strings.Contains(serialized, CommentMarker) {
+	if !strings.Contains(serialized, CraftMarker) {
 		t.Error("Serialized content should contain comment marker")
 	}
 }
@@ -142,7 +142,7 @@ Another comment from a different user.`
 
 	// Test serialization
 	serialized := f.Serialize()
-	if strings.Contains(serialized, CommentMarker) {
+	if strings.Contains(serialized, CraftMarker) {
 		t.Error("PR comments should not contain comment markers")
 	}
 	if !strings.Contains(serialized, RuleChar) {
