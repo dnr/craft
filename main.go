@@ -240,29 +240,45 @@ func hasUncommittedChanges() bool {
 func checkoutPRBranch(branchName, headRef, headSHA string) error {
 	remoteName := getRemoteName()
 	
-	// First, try to fetch the PR branch if it doesn't exist locally
-	cmd := exec.Command("git", "fetch", remoteName, headRef)
-	cmd.Run() // Ignore errors, branch might already exist
-	
 	// Check if local branch already exists
-	cmd = exec.Command("git", "rev-parse", "--verify", branchName)
+	cmd := exec.Command("git", "rev-parse", "--verify", branchName)
 	if cmd.Run() == nil {
-		// Branch exists, switch to it and pull latest
+		// Branch exists, switch to it
 		cmd = exec.Command("git", "checkout", branchName)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to checkout existing branch %s: %v", branchName, err)
 		}
 		
-		// Pull latest changes
-		cmd = exec.Command("git", "pull", remoteName, headRef)
+		// Simply reset to the exact SHA we want (no need to fetch the branch)
+		cmd = exec.Command("git", "reset", "--hard", headSHA)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to pull latest changes: %v", err)
+			// If reset fails, the SHA might not be available locally, try fetching
+			cmd = exec.Command("git", "fetch", remoteName)
+			if fetchErr := cmd.Run(); fetchErr != nil {
+				return fmt.Errorf("failed to fetch from remote and reset failed: reset=%v, fetch=%v", err, fetchErr)
+			}
+			
+			// Try reset again
+			cmd = exec.Command("git", "reset", "--hard", headSHA)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to reset to commit %s: %v", headSHA, err)
+			}
 		}
 	} else {
-		// Branch doesn't exist, create it
+		// Branch doesn't exist, create it from the SHA
 		cmd = exec.Command("git", "checkout", "-b", branchName, headSHA)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to create branch %s: %v", branchName, err)
+			// If checkout fails, the SHA might not be available locally, try fetching
+			cmd = exec.Command("git", "fetch", remoteName)
+			if fetchErr := cmd.Run(); fetchErr != nil {
+				return fmt.Errorf("failed to fetch from remote and checkout failed: checkout=%v, fetch=%v", err, fetchErr)
+			}
+			
+			// Try checkout again
+			cmd = exec.Command("git", "checkout", "-b", branchName, headSHA)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to create branch %s from %s: %v", branchName, headSHA, err)
+			}
 		}
 	}
 	
