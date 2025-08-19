@@ -367,7 +367,7 @@ func (f *FileWithComments) Parse(content string) error {
 						if pendingComments[lastIdx].Body == "" {
 							pendingComments[lastIdx].Body = commentContent
 						} else {
-							pendingComments[lastIdx].Body += " " + commentContent
+							pendingComments[lastIdx].Body += "\n" + commentContent
 						}
 					}
 				}
@@ -401,32 +401,46 @@ func getIndentation(line string) string {
 }
 
 func wrapText(text string, width int, indent string) []string {
-	if len(text) <= width {
-		return []string{text}
-	}
+	// Split by existing newlines first to preserve them
+	paragraphs := strings.Split(text, "\n")
+	var result []string
 	
-	var lines []string
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return []string{text}
-	}
-	
-	currentLine := words[0]
-	for _, word := range words[1:] {
-		// Account for indent + comment prefix + space
-		if len(currentLine)+len(word)+1 <= width {
-			currentLine += " " + word
-		} else {
-			lines = append(lines, currentLine)
-			currentLine = word
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			// Preserve empty lines
+			result = append(result, "")
+			continue
+		}
+		
+		if len(paragraph) <= width {
+			result = append(result, paragraph)
+			continue
+		}
+		
+		// Word wrap this paragraph
+		words := strings.Fields(paragraph)
+		if len(words) == 0 {
+			result = append(result, paragraph)
+			continue
+		}
+		
+		currentLine := words[0]
+		for _, word := range words[1:] {
+			if len(currentLine)+len(word)+1 <= width {
+				currentLine += " " + word
+			} else {
+				result = append(result, currentLine)
+				currentLine = word
+			}
+		}
+		
+		if currentLine != "" {
+			result = append(result, currentLine)
 		}
 	}
 	
-	if currentLine != "" {
-		lines = append(lines, currentLine)
-	}
-	
-	return lines
+	return result
 }
 
 func (f *FileWithComments) Serialize() string {
@@ -694,7 +708,7 @@ func (pr *PRComments) Parse(content string) error {
 		} else if currentComment != nil && trimmed != "" {
 			// Comment body line
 			if currentComment.Body != "" {
-				currentComment.Body += " "
+				currentComment.Body += "\n"
 			}
 			currentComment.Body += trimmed
 		}
@@ -774,10 +788,16 @@ func getCommentPrefix(filePath string) string {
 }
 
 func commitEmbeddedComments(prNumber int) error {
-	// Add all modified files
+	// Add all modified files and PR-COMMENTS.txt if it exists
 	cmd := exec.Command("git", "add", "-u") // Only add tracked files that were modified
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stage changes: %v", err)
+	}
+	
+	// Also add PR-COMMENTS.txt if it exists (might be new)
+	if _, err := os.Stat("PR-COMMENTS.txt"); err == nil {
+		cmd = exec.Command("git", "add", "PR-COMMENTS.txt")
+		cmd.Run() // Ignore errors, might already be staged
 	}
 	
 	// Check if there are any changes to commit
