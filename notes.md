@@ -22,10 +22,13 @@
     - prints out what will be sent
     - if given `--go`, sends it
     - saves new meta to PRMETA if necessary
-- choices to make
-  - rest vs graphql api
-    - graphql might be nice but it's unclear if everything can be done in it
-  - implementation language
-    - probably go or python would be most comfortable
+- decisions made
+  - **API**: GitHub REST API (more stable/documented than GraphQL)
+  - **Language**: Go (easier static binaries, good GitHub API support)
+  - **Comment format**: Use `⦒` as delimiter, e.g. `// ⦒ content goes here`
+    - Still valid language comments, but visually distinctive
+    - Content after `⦒` can use prefixes to distinguish types:
+      - Comment headers, bodies, new comments to submit, approve/reject directives
+    - Avoids conflicts with existing code using fancy unicode
 - references
   - https://github.com/shurcooL/githubv4 - graphql client for go
