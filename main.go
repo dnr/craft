@@ -576,24 +576,22 @@ func (f *FileWithComments) Serialize() string {
 
 	if f.IsPRComments() {
 		// For PR comments file: serialize comments at line 0
-		if comments, exists := f.Comments[0]; exists {
-			for i, comment := range comments {
-				if i > 0 {
-					result.WriteString("\n\n")
-				}
+		for i, comment := range f.Comments[0] {
+			if i > 0 {
+				result.WriteString("\n\n")
+			}
 
-				if comment.IsNew {
-					result.WriteString(NewCommentPrefix + comment.Body + "\n")
-				} else {
-					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
-					rule := createHorizontalRule(0, headerText, 7)
-					result.WriteString(rule + "\n")
+			if comment.IsNew {
+				result.WriteString(NewCommentPrefix + comment.Body + "\n")
+			} else {
+				headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
+				rule := createHorizontalRule(0, headerText, 7)
+				result.WriteString(rule + "\n")
 
-					// Wrap and write body
-					wrappedLines := wrapText(comment.Body, MaxLineLength, "")
-					for _, line := range wrappedLines {
-						result.WriteString(line + "\n")
-					}
+				// Wrap and write body
+				wrappedLines := wrapText(comment.Body, MaxLineLength, "")
+				for _, line := range wrappedLines {
+					result.WriteString(line + "\n")
 				}
 			}
 		}
