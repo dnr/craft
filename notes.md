@@ -30,5 +30,9 @@
     - Content after `⦒` can use prefixes to distinguish types:
       - Comment headers, bodies, new comments to submit, approve/reject directives
     - Avoids conflicts with existing code using fancy unicode
+  - **Architecture**: Use intermediate representation for file+comments
+    - Parse files to extract existing embedded comments and clean source
+    - Sync with GitHub API comments (add new, update existing)
+    - Serialize back to disk with embedded comments
 - references
   - https://github.com/shurcooL/githubv4 - graphql client for go

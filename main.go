@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -89,6 +90,16 @@ func handleGet(args []string) {
 	}
 	
 	fmt.Printf("Switched to branch '%s'\n", branchName)
+	
+	// Fetch and embed PR comments
+	fmt.Println("Fetching PR comments...")
+	err = embedPRComments(client, ctx, owner, repo, prNumber)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error embedding comments: %v\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Println("PR ready for review!")
 }
 
 func handleSend(args []string) {
@@ -185,4 +196,180 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 	}
 	
 	return nil
+}
+
+type ReviewComment struct {
+	ID       int64
+	Line     int
+	Author   string
+	Body     string
+	IsNew    bool // True if this is a new comment to be submitted
+}
+
+type FileWithComments struct {
+	Path     string
+	Lines    []string
+	Comments map[int][]ReviewComment // Line number -> comments
+}
+
+func (f *FileWithComments) Parse(content string) error {
+	lines := strings.Split(content, "\n")
+	f.Lines = make([]string, 0)
+	f.Comments = make(map[int][]ReviewComment)
+	
+	commentPrefix := getCommentPrefix(f.Path)
+	
+	for _, line := range lines {
+		if strings.Contains(line, " ⦒ ") && strings.HasPrefix(strings.TrimSpace(line), commentPrefix) {
+			// This is an embedded comment
+			content := strings.TrimSpace(line)
+			if idx := strings.Index(content, " ⦒ "); idx != -1 {
+				commentContent := content[idx+3:] // Skip " ⦒ "
+				
+				// Parse comment format: "author: body" or "+: body" for new comments
+				var comment ReviewComment
+				if strings.HasPrefix(commentContent, "+: ") {
+					comment.Author = ""
+					comment.Body = commentContent[3:]
+					comment.IsNew = true
+				} else if colonIdx := strings.Index(commentContent, ": "); colonIdx != -1 {
+					comment.Author = commentContent[:colonIdx]
+					comment.Body = commentContent[colonIdx+2:]
+					comment.IsNew = false
+				} else {
+					// Malformed comment, treat as body
+					comment.Body = commentContent
+				}
+				
+				// Associate with the previous source line
+				lineNum := len(f.Lines)
+				f.Comments[lineNum] = append(f.Comments[lineNum], comment)
+			}
+		} else {
+			// This is a source code line
+			f.Lines = append(f.Lines, line)
+		}
+	}
+	
+	return nil
+}
+
+func (f *FileWithComments) Serialize() string {
+	var result strings.Builder
+	commentPrefix := getCommentPrefix(f.Path)
+	
+	for i, line := range f.Lines {
+		result.WriteString(line)
+		result.WriteString("\n")
+		
+		// Add any comments for this line
+		if comments, exists := f.Comments[i+1]; exists { // GitHub uses 1-based line numbers
+			for _, comment := range comments {
+				result.WriteString(commentPrefix + " ⦒ ")
+				if comment.IsNew {
+					result.WriteString("+: " + comment.Body)
+				} else {
+					result.WriteString(comment.Author + ": " + comment.Body)
+				}
+				result.WriteString("\n")
+			}
+		}
+	}
+	
+	return result.String()
+}
+
+func (f *FileWithComments) SyncWithGitHubComments(ghComments []*github.PullRequestComment) {
+	// Clear existing non-new comments
+	for lineNum, comments := range f.Comments {
+		var newComments []ReviewComment
+		for _, comment := range comments {
+			if comment.IsNew {
+				newComments = append(newComments, comment)
+			}
+		}
+		if len(newComments) > 0 {
+			f.Comments[lineNum] = newComments
+		} else {
+			delete(f.Comments, lineNum)
+		}
+	}
+	
+	// Add GitHub comments
+	for _, ghComment := range ghComments {
+		lineNum := ghComment.GetLine()
+		comment := ReviewComment{
+			ID:     ghComment.GetID(),
+			Line:   lineNum,
+			Author: ghComment.GetUser().GetLogin(),
+			Body:   ghComment.GetBody(),
+			IsNew:  false,
+		}
+		f.Comments[lineNum] = append(f.Comments[lineNum], comment)
+	}
+}
+
+func embedPRComments(client *github.Client, ctx context.Context, owner, repo string, prNumber int) error {
+	// Get PR review comments (inline comments on code)
+	comments, _, err := client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
+	if err != nil {
+		return fmt.Errorf("failed to fetch PR comments: %v", err)
+	}
+	
+	// Group comments by file
+	fileComments := make(map[string][]*github.PullRequestComment)
+	for _, comment := range comments {
+		if comment.GetPath() != "" {
+			fileComments[comment.GetPath()] = append(fileComments[comment.GetPath()], comment)
+		}
+	}
+	
+	// Process each file with comments
+	for filePath, comments := range fileComments {
+		err := processFileComments(filePath, comments)
+		if err != nil {
+			return fmt.Errorf("failed to process comments in %s: %v", filePath, err)
+		}
+	}
+	
+	fmt.Printf("Embedded comments in %d files\n", len(fileComments))
+	return nil
+}
+
+func processFileComments(filePath string, ghComments []*github.PullRequestComment) error {
+	// Read existing file
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	
+	// Parse into intermediate representation
+	fileWithComments := &FileWithComments{Path: filePath}
+	err = fileWithComments.Parse(string(content))
+	if err != nil {
+		return err
+	}
+	
+	// Sync with GitHub comments
+	fileWithComments.SyncWithGitHubComments(ghComments)
+	
+	// Write back to disk
+	serialized := fileWithComments.Serialize()
+	return os.WriteFile(filePath, []byte(serialized), 0644)
+}
+
+func getCommentPrefix(filePath string) string {
+	ext := filepath.Ext(filePath)
+	switch ext {
+	case ".go", ".js", ".ts", ".tsx", ".jsx", ".c", ".cpp", ".h", ".hpp", ".java", ".rs", ".php":
+		return "//"
+	case ".py", ".sh", ".rb", ".yaml", ".yml":
+		return "#"
+	case ".html", ".xml":
+		return "<!--"
+	case ".css", ".scss", ".less":
+		return "/*"
+	default:
+		return "#" // Default fallback
+	}
 }
