@@ -14,27 +14,27 @@
     - pulls head of PR branch into a local branch named for pr number (if already on a branch, can use just `get` to pull latest changes)
     - switches to that branch (abort if local changes)
     - gets inline PR comments, integrates them into comments in the code
-    - gets general PR comments, puts in PRMETA in repo root (along with sufficient metadata to send the review)
+    - gets general PR comments, puts in PR-COMMENTS.txt in repo root (along with sufficient metadata to send the review)
   - user: opens files in vim, use fugitive difftool/diffsplit, add new comments
   - `craft send`
-    - loads PRMETA, and loads all review comments from source files
+    - loads PR-COMMENTS.txt, and loads all review comments from source files
     - figures out what api calls to make to send everything
     - prints out what will be sent
     - if given `--go`, sends it
-    - saves new meta to PRMETA if necessary
+    - saves new meta to PR-COMMENTS.txt if necessary
 - decisions made
   - **API**: GitHub REST API (more stable/documented than GraphQL)
   - **Language**: Go (easier static binaries, good GitHub API support)
-  - **Comment format**: Use `⦒` as delimiter, e.g. `// ⦒ content goes here`
+  - **Comment format**: Use `❯` as delimiter, e.g. `// ❯ content goes here`
     - Still valid language comments, but visually distinctive
-    - Content after `⦒` can use prefixes to distinguish types:
+    - Content after `❯` can use prefixes to distinguish types:
       - Comment headers, bodies, new comments to submit, approve/reject directives
     - Avoids conflicts with existing code using fancy unicode
   - **Architecture**: Use intermediate representation for file+comments
     - Parse files to extract existing embedded comments and clean source
     - Sync with GitHub API comments (add new, update existing)
     - Serialize back to disk with embedded comments
-  - **Authentication**: Read from ~/.config/gh/hosts.yml if available, fallback to GITHUB_TOKEN
+  - **Authentication**: Read from `~/.config/gh/hosts.yml` if available, fallback to `GITHUB_TOKEN`
   - **Configuration**: Use git config `craft.remoteName` to specify remote (defaults to "origin")
 - references
   - https://github.com/shurcooL/githubv4 - graphql client for go
