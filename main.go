@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+
+	"github.com/google/go-github/v74/github"
+	"golang.org/x/oauth2"
 )
 
 func main() {
@@ -46,4 +50,20 @@ func handleSend(args []string) {
 			fmt.Println("--go flag detected")
 		}
 	}
+}
+
+func createGitHubClient() *github.Client {
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "Error: GITHUB_TOKEN environment variable is required")
+		fmt.Fprintln(os.Stderr, "Create a personal access token at: https://github.com/settings/tokens")
+		fmt.Fprintln(os.Stderr, "Then export GITHUB_TOKEN=your_token")
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	tc := oauth2.NewClient(ctx, ts)
+	
+	return github.NewClient(tc)
 }
