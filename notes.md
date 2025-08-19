@@ -34,5 +34,7 @@
     - Parse files to extract existing embedded comments and clean source
     - Sync with GitHub API comments (add new, update existing)
     - Serialize back to disk with embedded comments
+  - **Authentication**: Read from ~/.config/gh/hosts.yml if available, fallback to GITHUB_TOKEN
+  - **Configuration**: Use git config `craft.remoteName` to specify remote (defaults to "origin")
 - references
   - https://github.com/shurcooL/githubv4 - graphql client for go

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -111,12 +112,47 @@ func handleSend(args []string) {
 	}
 }
 
+type GHConfig struct {
+	GithubCom struct {
+		OauthToken string `yaml:"oauth_token"`
+		User       string `yaml:"user"`
+	} `yaml:"github.com"`
+}
+
+func getGitHubToken() string {
+	// First try GITHUB_TOKEN environment variable
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		return token
+	}
+	
+	// Try to read from gh CLI config
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	
+	configPath := filepath.Join(homeDir, ".config", "gh", "hosts.yml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+	
+	var config GHConfig
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		return ""
+	}
+	
+	return config.GithubCom.OauthToken
+}
+
 func createGitHubClient() *github.Client {
-	token := os.Getenv("GITHUB_TOKEN")
+	token := getGitHubToken()
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "Error: GITHUB_TOKEN environment variable is required")
-		fmt.Fprintln(os.Stderr, "Create a personal access token at: https://github.com/settings/tokens")
-		fmt.Fprintln(os.Stderr, "Then export GITHUB_TOKEN=your_token")
+		fmt.Fprintln(os.Stderr, "Error: No GitHub token found")
+		fmt.Fprintln(os.Stderr, "Either:")
+		fmt.Fprintln(os.Stderr, "  1. Set GITHUB_TOKEN environment variable")
+		fmt.Fprintln(os.Stderr, "  2. Run 'gh auth login' to configure gh CLI")
 		os.Exit(1)
 	}
 
@@ -127,11 +163,25 @@ func createGitHubClient() *github.Client {
 	return github.NewClient(tc)
 }
 
+func getRemoteName() string {
+	// Check git config for craft.remoteName
+	cmd := exec.Command("git", "config", "craft.remoteName")
+	output, err := cmd.Output()
+	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
+		return strings.TrimSpace(string(output))
+	}
+	
+	// Default to origin
+	return "origin"
+}
+
 func getRepoInfo() (owner, repo string, err error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	remoteName := getRemoteName()
+	
+	cmd := exec.Command("git", "remote", "get-url", remoteName)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", "", fmt.Errorf("not in a git repository or no origin remote")
+		return "", "", fmt.Errorf("not in a git repository or no '%s' remote", remoteName)
 	}
 	
 	remoteURL := strings.TrimSpace(string(output))
@@ -145,7 +195,7 @@ func getRepoInfo() (owner, repo string, err error) {
 	} else if strings.HasPrefix(remoteURL, "git@github.com:") {
 		repoPath = strings.TrimPrefix(remoteURL, "git@github.com:")
 	} else {
-		return "", "", fmt.Errorf("remote origin is not a GitHub repository")
+		return "", "", fmt.Errorf("remote '%s' is not a GitHub repository", remoteName)
 	}
 	
 	// Remove .git suffix
@@ -165,12 +215,33 @@ func hasUncommittedChanges() bool {
 	if err != nil {
 		return true // Assume changes if we can't check
 	}
-	return len(strings.TrimSpace(string(output))) > 0
+	
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		if len(line) < 2 {
+			continue
+		}
+		
+		// Check first two characters for status
+		// ' M' = modified, not staged
+		// 'M ' = modified, staged  
+		// 'MM' = modified, staged and unstaged
+		// 'A ' = added, staged
+		// '??' = untracked (allowed)
+		status := line[:2]
+		if status != "??" && strings.TrimSpace(status) != "" {
+			return true // Has changes to tracked files or staged changes
+		}
+	}
+	
+	return false
 }
 
 func checkoutPRBranch(branchName, headRef, headSHA string) error {
+	remoteName := getRemoteName()
+	
 	// First, try to fetch the PR branch if it doesn't exist locally
-	cmd := exec.Command("git", "fetch", "origin", headRef)
+	cmd := exec.Command("git", "fetch", remoteName, headRef)
 	cmd.Run() // Ignore errors, branch might already exist
 	
 	// Check if local branch already exists
@@ -183,7 +254,7 @@ func checkoutPRBranch(branchName, headRef, headSHA string) error {
 		}
 		
 		// Pull latest changes
-		cmd = exec.Command("git", "pull", "origin", headRef)
+		cmd = exec.Command("git", "pull", remoteName, headRef)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to pull latest changes: %v", err)
 		}
