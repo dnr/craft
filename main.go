@@ -451,22 +451,21 @@ func (f *FileWithComments) Serialize() string {
 						dateStr = comment.CreatedAt.Format("2006-01-02 15:04")
 					}
 					
-					// Header line with horizontal rule
+					// Header line with horizontal rule (5 dashes before, rest after)
 					headerText := comment.Author
 					if dateStr != "" {
 						headerText += " (" + dateStr + ")"
 					}
 					headerText += ":"
 					
-					// Calculate remaining space for dashes
-					prefixLen := len(indent + commentPrefix + " ⦒ ")
-					availableWidth := 100 - prefixLen
-					dashCount := availableWidth - len(headerText) - 1 // -1 for space before dashes
-					if dashCount < 3 {
-						dashCount = 3 // Minimum dashes
+					// Calculate remaining space for trailing dashes
+					prefixLen := len(indent + commentPrefix + " ⦒ ───── ")
+					trailingDashCount := 100 - prefixLen - len(headerText) - 1 // -1 for space before trailing dashes
+					if trailingDashCount < 3 {
+						trailingDashCount = 3 // Minimum trailing dashes
 					}
 					
-					result.WriteString(indent + commentPrefix + " ⦒ " + headerText + " " + strings.Repeat("─", dashCount))
+					result.WriteString(indent + commentPrefix + " ⦒ ───── " + headerText + " " + strings.Repeat("─", trailingDashCount))
 					
 					// Wrapped body lines
 					bodyWidth := 100 - len(indent) - len(commentPrefix) - 3 // " ⦒ "
