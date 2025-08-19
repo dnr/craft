@@ -412,28 +412,45 @@ func (f *FileWithComments) Parse(content string) error {
 					Body:   commentContent[len(NewCommentPrefix):],
 					Author: "",
 				}
-			} else if colonIdx := strings.Index(commentContent, ": "); colonIdx != -1 {
+			} else if strings.Contains(commentContent, " "+RuleChar+" ") {
 				// Save previous comment if exists
 				if currentComment != nil {
 					pendingComments = append(pendingComments, *currentComment)
 				}
-				// Parse header for existing comment
+				// Parse header with rule character separators
 				currentComment = &ReviewComment{
 					IsNew:  false,
 					Body:   "",
 				}
-				beforeColon := commentContent[:colonIdx]
-				// Look for (date) pattern
-				if parenStart := strings.LastIndex(beforeColon, " ("); parenStart != -1 {
-					if parenEnd := strings.Index(beforeColon[parenStart:], ")"); parenEnd != -1 {
-						currentComment.Author = strings.TrimSpace(beforeColon[:parenStart])
-						dateStr := beforeColon[parenStart+2 : parenStart+parenEnd]
-						if t, err := time.Parse(TimeFormat, dateStr); err == nil {
-							currentComment.CreatedAt = &t
+				
+				// For source files, strip leading rule characters first
+				headerContent := commentContent
+				// Strip any number of leading rule characters and space
+				headerContent = strings.TrimLeft(headerContent, RuleChar+" ")
+				
+				// Split by rule character separator
+				parts := strings.Split(headerContent, " "+RuleChar+" ")
+				if len(parts) >= 1 {
+					currentComment.Author = strings.TrimSpace(parts[0])
+				}
+				if len(parts) >= 2 {
+					dateStr := strings.TrimSpace(parts[1])
+					if t, err := time.Parse(TimeFormat, dateStr); err == nil {
+						currentComment.CreatedAt = &t
+					}
+				}
+				if len(parts) >= 3 {
+					metadata := strings.TrimSpace(parts[2])
+					if metadata == "[file]" {
+						currentComment.IsFile = true
+					} else if strings.HasPrefix(metadata, "[-") && strings.HasSuffix(metadata, "]") {
+						// Parse range metadata like [-3]
+						rangeStr := metadata[2 : len(metadata)-1]
+						if rangeSize, err := strconv.Atoi(rangeStr); err == nil && rangeSize > 0 {
+							// We'll need to set StartLine when we know the current line
+							currentComment.StartLine = -rangeSize // Temporary marker
 						}
 					}
-				} else {
-					currentComment.Author = strings.TrimSpace(beforeColon)
 				}
 			} else if currentComment != nil {
 				// This is a continuation line
@@ -453,6 +470,18 @@ func (f *FileWithComments) Parse(content string) error {
 					currentComment = nil
 				}
 				lineNum := len(f.Lines) // 1-based line number for the line we just added
+				
+				// Fix up range comments - convert negative StartLine markers to actual line numbers
+				for i := range pendingComments {
+					if pendingComments[i].StartLine < 0 {
+						rangeSize := -pendingComments[i].StartLine
+						pendingComments[i].StartLine = lineNum - rangeSize + 1
+						pendingComments[i].Line = lineNum
+					} else {
+						pendingComments[i].Line = lineNum
+					}
+				}
+				
 				f.Comments[lineNum] = append(f.Comments[lineNum], pendingComments...)
 				pendingComments = nil
 			}
@@ -468,6 +497,18 @@ func (f *FileWithComments) Parse(content string) error {
 		if !isPRFile && len(f.Lines) > 0 {
 			attachLine = len(f.Lines) // Attach to last line if it's a source file
 		}
+		
+		// Fix up range comments for remaining comments too
+		for i := range pendingComments {
+			if pendingComments[i].StartLine < 0 && !isPRFile {
+				rangeSize := -pendingComments[i].StartLine
+				pendingComments[i].StartLine = attachLine - rangeSize + 1
+				pendingComments[i].Line = attachLine
+			} else {
+				pendingComments[i].Line = attachLine
+			}
+		}
+		
 		f.Comments[attachLine] = append(f.Comments[attachLine], pendingComments...)
 	}
 	
@@ -769,18 +810,18 @@ func processPRLevelComments(filePath string, ghComments []*github.IssueComment) 
 }
 
 func formatCommentHeader(author string, createdAt *time.Time, metadata string) string {
-	dateStr := ""
+	// Format: ───── author ─ date ─ metadata ──────────
+	parts := []string{author}
+	
 	if createdAt != nil {
-		dateStr = createdAt.Format(TimeFormat)
+		parts = append(parts, createdAt.Format(TimeFormat))
 	}
 	
-	headerText := author
-	if dateStr != "" {
-		headerText += " (" + dateStr + ")"
+	if metadata != "" {
+		parts = append(parts, strings.TrimSpace(metadata))
 	}
-	headerText += ":"
 	
-	return headerText + metadata
+	return strings.Join(parts, " "+RuleChar+" ")
 }
 
 func createHorizontalRule(prefixLen int, headerText string, leadingDashes int) string {
