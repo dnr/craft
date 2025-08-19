@@ -70,6 +70,25 @@ func handleGet(args []string) {
 	fmt.Printf("Found PR #%d: %s\n", prNumber, pr.GetTitle())
 	fmt.Printf("Branch: %s\n", pr.GetHead().GetRef())
 	fmt.Printf("Base: %s\n", pr.GetBase().GetRef())
+	
+	// Check for uncommitted changes
+	if hasUncommittedChanges() {
+		fmt.Fprintf(os.Stderr, "Error: You have uncommitted changes. Please commit or stash them first.\n")
+		os.Exit(1)
+	}
+	
+	// Create and switch to PR branch
+	branchName := fmt.Sprintf("pr-%d", prNumber)
+	headRef := pr.GetHead().GetRef()
+	headSHA := pr.GetHead().GetSHA()
+	
+	err = checkoutPRBranch(branchName, headRef, headSHA)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking out branch: %v\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Printf("Switched to branch '%s'\n", branchName)
 }
 
 func handleSend(args []string) {
@@ -127,4 +146,43 @@ func getRepoInfo() (owner, repo string, err error) {
 	}
 	
 	return parts[0], parts[1], nil
+}
+
+func hasUncommittedChanges() bool {
+	cmd := exec.Command("git", "status", "--porcelain")
+	output, err := cmd.Output()
+	if err != nil {
+		return true // Assume changes if we can't check
+	}
+	return len(strings.TrimSpace(string(output))) > 0
+}
+
+func checkoutPRBranch(branchName, headRef, headSHA string) error {
+	// First, try to fetch the PR branch if it doesn't exist locally
+	cmd := exec.Command("git", "fetch", "origin", headRef)
+	cmd.Run() // Ignore errors, branch might already exist
+	
+	// Check if local branch already exists
+	cmd = exec.Command("git", "rev-parse", "--verify", branchName)
+	if cmd.Run() == nil {
+		// Branch exists, switch to it and pull latest
+		cmd = exec.Command("git", "checkout", branchName)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to checkout existing branch %s: %v", branchName, err)
+		}
+		
+		// Pull latest changes
+		cmd = exec.Command("git", "pull", "origin", headRef)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to pull latest changes: %v", err)
+		}
+	} else {
+		// Branch doesn't exist, create it
+		cmd = exec.Command("git", "checkout", "-b", branchName, headSHA)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to create branch %s: %v", branchName, err)
+		}
+	}
+	
+	return nil
 }
