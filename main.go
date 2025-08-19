@@ -15,6 +15,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// Comment formatting constants
+	CommentMarker     = "⦒"
+	RuleChar          = "─"
+	TimeFormat        = "2006-01-02 15:04"
+	BranchPrefix      = "pr-"
+	PRCommentsFile    = "PR-COMMENTS.txt"
+	NewCommentPrefix  = "+: "
+	LeadingDashes     = 5
+	MaxLineLength     = 100
+	CommitMsgTemplate = "craft: embed PR #%d review comments"
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -59,8 +72,8 @@ func handleGet(args []string) {
 	} else {
 		// Try to extract PR number from current branch name
 		currentBranch, err := getCurrentBranch()
-		if err == nil && strings.HasPrefix(currentBranch, "pr-") {
-			prNumberStr := strings.TrimPrefix(currentBranch, "pr-")
+		if err == nil && strings.HasPrefix(currentBranch, BranchPrefix) {
+			prNumberStr := strings.TrimPrefix(currentBranch, BranchPrefix)
 			if extractedPR, err := strconv.Atoi(prNumberStr); err == nil {
 				prNumber = extractedPR
 				fmt.Printf("Using PR number %d from current branch '%s'\n", prNumber, currentBranch)
@@ -94,7 +107,7 @@ func handleGet(args []string) {
 	}
 	
 	// Create and switch to PR branch
-	branchName := fmt.Sprintf("pr-%d", prNumber)
+	branchName := fmt.Sprintf("%s%d", BranchPrefix, prNumber)
 	headRef := pr.GetHead().GetRef()
 	headSHA := pr.GetHead().GetSHA()
 	
@@ -341,17 +354,18 @@ func (f *FileWithComments) Parse(content string) error {
 	var pendingComments []ReviewComment
 	
 	for _, line := range lines {
-		if strings.Contains(line, " ⦒ ") && strings.HasPrefix(strings.TrimSpace(line), commentPrefix) {
+		if strings.Contains(line, " "+CommentMarker+" ") && strings.HasPrefix(strings.TrimSpace(line), commentPrefix) {
 			// This is an embedded comment
 			content := strings.TrimSpace(line)
-			if idx := strings.Index(content, " ⦒ "); idx != -1 {
-				commentContent := content[idx+3:] // Skip " ⦒ "
+			markerWithSpaces := " " + CommentMarker + " "
+			if idx := strings.Index(content, markerWithSpaces); idx != -1 {
+				commentContent := content[idx+len(markerWithSpaces):]
 				
 				// Parse comment format: "author: body" or "+: body" for new comments
 				var comment ReviewComment
-				if strings.HasPrefix(commentContent, "+: ") {
+				if strings.HasPrefix(commentContent, NewCommentPrefix) {
 					comment.Author = ""
-					comment.Body = commentContent[3:]
+					comment.Body = commentContent[len(NewCommentPrefix):]
 					comment.IsNew = true
 					pendingComments = append(pendingComments, comment)
 				} else if colonIdx := strings.Index(commentContent, ": "); colonIdx != -1 {
@@ -459,7 +473,7 @@ func (f *FileWithComments) Serialize() string {
 				
 				if comment.IsNew {
 					// New comment format: just the body with +: prefix
-					result.WriteString(indent + commentPrefix + " ⦒ +: " + comment.Body)
+					result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + NewCommentPrefix + comment.Body)
 				} else {
 					// Existing comment with header and wrapped body
 					metadata := ""
@@ -471,13 +485,14 @@ func (f *FileWithComments) Serialize() string {
 					}
 					
 					headerText := formatCommentHeader(comment.Author, comment.CreatedAt, metadata)
-					prefixLen := len(indent + commentPrefix + " ⦒ ")
-					rule := createHorizontalRule(prefixLen, headerText, 5)
+					prefixLen := len(indent + commentPrefix + " " + CommentMarker + " ")
+					rule := createHorizontalRule(prefixLen, headerText, LeadingDashes)
 					
-					result.WriteString(indent + commentPrefix + " ⦒ " + rule)
+					result.WriteString(indent + commentPrefix + " " + CommentMarker + " " + rule)
 					
 					// Wrapped body lines
-					bodyWidth := 100 - len(indent) - len(commentPrefix) - 3 // " ⦒ "
+					markerSpace := " " + CommentMarker + " "
+					bodyWidth := MaxLineLength - len(indent) - len(commentPrefix) - len(markerSpace)
 					if bodyWidth < 20 {
 						bodyWidth = 20 // Minimum reasonable width
 					}
@@ -485,7 +500,7 @@ func (f *FileWithComments) Serialize() string {
 					wrappedLines := wrapText(comment.Body, bodyWidth, indent)
 					for _, wrappedLine := range wrappedLines {
 						result.WriteString("\n")
-						result.WriteString(indent + commentPrefix + " ⦒ " + wrappedLine)
+						result.WriteString(indent + commentPrefix + markerSpace + wrappedLine)
 					}
 				}
 			}
@@ -562,7 +577,7 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 	
 	// Process PR-level comments first
 	if len(prComments) > 0 {
-		err := processPRLevelComments("PR-COMMENTS.txt", prComments)
+		err := processPRLevelComments(PRCommentsFile, prComments)
 		if err != nil {
 			return fmt.Errorf("failed to process PR comments: %v", err)
 		}
@@ -631,7 +646,7 @@ func processPRLevelComments(filePath string, ghComments []*github.IssueComment) 
 func formatCommentHeader(author string, createdAt *time.Time, metadata string) string {
 	dateStr := ""
 	if createdAt != nil {
-		dateStr = createdAt.Format("2006-01-02 15:04")
+		dateStr = createdAt.Format(TimeFormat)
 	}
 	
 	headerText := author
@@ -644,12 +659,12 @@ func formatCommentHeader(author string, createdAt *time.Time, metadata string) s
 }
 
 func createHorizontalRule(prefixLen int, headerText string, leadingDashes int) string {
-	trailingDashCount := 100 - prefixLen - leadingDashes - len(headerText) - 2 // -2 for spaces
+	trailingDashCount := MaxLineLength - prefixLen - leadingDashes - len(headerText) - 2 // -2 for spaces
 	if trailingDashCount < 3 {
 		trailingDashCount = 3
 	}
 	
-	return strings.Repeat("─", leadingDashes) + " " + headerText + " " + strings.Repeat("─", trailingDashCount)
+	return strings.Repeat(RuleChar, leadingDashes) + " " + headerText + " " + strings.Repeat(RuleChar, trailingDashCount)
 }
 
 type PRComments struct {
@@ -666,7 +681,8 @@ func (pr *PRComments) Parse(content string) error {
 		trimmed := strings.TrimSpace(line)
 		
 		// Check for header line (starts with dashes)
-		if strings.HasPrefix(trimmed, "─────── ") || strings.HasPrefix(trimmed, "───────") {
+		rulePrefix := strings.Repeat(RuleChar, 7) // 7 dashes for PR comment headers
+		if strings.HasPrefix(trimmed, rulePrefix) {
 			// Save previous comment if exists
 			if currentComment != nil {
 				pr.Comments = append(pr.Comments, *currentComment)
@@ -679,7 +695,7 @@ func (pr *PRComments) Parse(content string) error {
 			}
 			
 			// Extract author and date from header
-			headerContent := strings.TrimLeft(trimmed, "─ ")
+			headerContent := strings.TrimLeft(trimmed, RuleChar+" ")
 			if colonIdx := strings.LastIndex(headerContent, ":"); colonIdx != -1 {
 				beforeColon := headerContent[:colonIdx]
 				// Look for (date) pattern
@@ -687,7 +703,7 @@ func (pr *PRComments) Parse(content string) error {
 					if parenEnd := strings.Index(beforeColon[parenStart:], ")"); parenEnd != -1 {
 						currentComment.Author = strings.TrimSpace(beforeColon[:parenStart])
 						dateStr := beforeColon[parenStart+2 : parenStart+parenEnd]
-						if t, err := time.Parse("2006-01-02 15:04", dateStr); err == nil {
+						if t, err := time.Parse(TimeFormat, dateStr); err == nil {
 							currentComment.CreatedAt = &t
 						}
 					}
@@ -695,14 +711,14 @@ func (pr *PRComments) Parse(content string) error {
 					currentComment.Author = strings.TrimSpace(beforeColon)
 				}
 			}
-		} else if strings.HasPrefix(trimmed, "+: ") {
+		} else if strings.HasPrefix(trimmed, NewCommentPrefix) {
 			// New comment
 			if currentComment != nil {
 				pr.Comments = append(pr.Comments, *currentComment)
 			}
 			currentComment = &ReviewComment{
 				IsNew:  true,
-				Body:   strings.TrimPrefix(trimmed, "+: "),
+				Body:   strings.TrimPrefix(trimmed, NewCommentPrefix),
 				Author: "",
 			}
 		} else if currentComment != nil && trimmed != "" {
@@ -731,14 +747,14 @@ func (pr *PRComments) Serialize() string {
 		}
 		
 		if comment.IsNew {
-			result.WriteString("+: " + comment.Body + "\n")
+			result.WriteString(NewCommentPrefix + comment.Body + "\n")
 		} else {
 			headerText := formatCommentHeader(comment.Author, comment.CreatedAt, "")
 			rule := createHorizontalRule(0, headerText, 7)
 			result.WriteString(rule + "\n")
 			
 			// Wrap and write body
-			wrappedLines := wrapText(comment.Body, 100, "")
+			wrappedLines := wrapText(comment.Body, MaxLineLength, "")
 			for _, line := range wrappedLines {
 				result.WriteString(line + "\n")
 			}
@@ -795,8 +811,8 @@ func commitEmbeddedComments(prNumber int) error {
 	}
 	
 	// Also add PR-COMMENTS.txt if it exists (might be new)
-	if _, err := os.Stat("PR-COMMENTS.txt"); err == nil {
-		cmd = exec.Command("git", "add", "PR-COMMENTS.txt")
+	if _, err := os.Stat(PRCommentsFile); err == nil {
+		cmd = exec.Command("git", "add", PRCommentsFile)
 		cmd.Run() // Ignore errors, might already be staged
 	}
 	
@@ -808,7 +824,7 @@ func commitEmbeddedComments(prNumber int) error {
 	}
 	
 	// Commit with descriptive message
-	commitMsg := fmt.Sprintf("craft: embed PR #%d review comments", prNumber)
+	commitMsg := fmt.Sprintf(CommitMsgTemplate, prNumber)
 	cmd = exec.Command("git", "commit", "-m", commitMsg)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to commit: %v", err)
