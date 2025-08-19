@@ -363,7 +363,6 @@ func (f *FileWithComments) Parse(content string) error {
 	f.Comments = make(map[int][]ReviewComment)
 
 	commentPrefix := getCommentPrefix(f.Path)
-	isPRFile := (f.Path == PRCommentsFile)
 
 	var pendingComments []ReviewComment
 	var currentComment *ReviewComment
@@ -373,7 +372,7 @@ func (f *FileWithComments) Parse(content string) error {
 		isCommentLine := false
 		commentContent := ""
 
-		if isPRFile {
+		if f.IsPRComments() {
 			// For PR comments file: check for rule headers or +: lines
 			rulePrefix := strings.Repeat(RuleChar, 7)
 			if strings.HasPrefix(trimmed, rulePrefix) {
@@ -459,7 +458,7 @@ func (f *FileWithComments) Parse(content string) error {
 				}
 				currentComment.Body += commentContent
 			}
-		} else if !isPRFile {
+		} else if !f.IsPRComments() {
 			// This is a source code line (only for non-PR files)
 			f.Lines = append(f.Lines, line)
 
@@ -494,13 +493,13 @@ func (f *FileWithComments) Parse(content string) error {
 			pendingComments = append(pendingComments, *currentComment)
 		}
 		attachLine := 0
-		if !isPRFile && len(f.Lines) > 0 {
+		if !f.IsPRComments() && len(f.Lines) > 0 {
 			attachLine = len(f.Lines) // Attach to last line if it's a source file
 		}
 
 		// Fix up range comments for remaining comments too
 		for i := range pendingComments {
-			if pendingComments[i].StartLine < 0 && !isPRFile {
+			if pendingComments[i].StartLine < 0 && !f.IsPRComments() {
 				rangeSize := -pendingComments[i].StartLine
 				pendingComments[i].StartLine = attachLine - rangeSize + 1
 				pendingComments[i].Line = attachLine
@@ -570,12 +569,15 @@ func wrapText(text string, width int, indent string) []string {
 	return result
 }
 
+func (f *FileWithComments) IsPRComments() bool {
+	return f.Path == PRCommentsFile
+}
+
 func (f *FileWithComments) Serialize() string {
 	var result strings.Builder
 	commentPrefix := getCommentPrefix(f.Path)
-	isPRFile := (f.Path == PRCommentsFile)
 
-	if isPRFile {
+	if f.IsPRComments() {
 		// For PR comments file: serialize comments at line 0
 		if comments, exists := f.Comments[0]; exists {
 			for i, comment := range comments {
