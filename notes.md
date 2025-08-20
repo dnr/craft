@@ -39,9 +39,24 @@
 - references
   - https://github.com/shurcooL/githubv4 - graphql client for go
 
+- **Comment Header Format**: Extended structured format with key-value fields
+  - Format: `5+ RuleChars ─ field1 ─ field2 ─ ... ─ 5+ RuleChars`
+  - Fields: `by author`, `date YYYY-MM-DD HH:MM`, `id 12345`, `parent 67890`, `range -N`, `file`, `new`
+  - Boolean fields (`file`, `new`) can omit value (assumed true)
+  - Examples:
+    - Line comment: `───── by alice ─ date 2025-01-01 12:34 ─ id 543216 ─────`
+    - File-level: `───── by bob ─ date 2025-01-01 12:34 ─ file ─ id 543216 ─────`
+    - Range comment: `───── by carol ─ date 2025-01-01 12:34 ─ range -12 ─ id 543216 ─────`
+    - Reply: `───── by dave ─ date 2025-01-01 12:34 ─ id 543216 ─ parent 284834 ─────`
+    - New comment: `───── new ─────`
+  - Enables proper sync, editing, and replies while keeping everything in-file
+
 TODO:
 
-- make `craft get` a sync operation (preserve existing NEW comments
+- implement new structured comment header format
+- make `craft get` a sync operation (preserve existing NEW comments) using IDs
 - use the `reviews` endpoint: `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` to submit multiple comments at once
 - make `craft send` able to approve/request-changes
+- support editing existing comments (mark with `new` + original `id`)
+- support reply comments (use `parent` field)
 
