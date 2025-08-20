@@ -58,4 +58,6 @@ TODO:
 - make `craft send` able to approve/request-changes
 - support editing existing comments (mark with `new` + original `id`)
 - support reply comments (use `parent` field)
+- support the `since` parameter to quickly fetch only new/updated comments on a PR
+  (use the latest timestamp of any comment in any file as the since)
 
