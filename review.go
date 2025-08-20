@@ -14,7 +14,7 @@ import (
 type ReviewComment struct {
 	ID        int64
 	Line      int
-	StartLine int    // For range comments, the starting line (0 if not a range)
+	StartLine int // For range comments, the starting line (0 if not a range)
 	Author    string
 	Body      string
 	CreatedAt *time.Time
@@ -75,7 +75,7 @@ func parseHeaderFields(headerContent string) *ReviewComment {
 
 	// Split by rule character separator
 	parts := strings.Split(headerContent, " "+RuleChar+" ")
-	
+
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -132,7 +132,7 @@ func unwrapShorthandBody(body string) string {
 	lines := strings.Split(body, "\n")
 	var result []string
 	var currentParagraph []string
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -147,12 +147,12 @@ func unwrapShorthandBody(body string) string {
 			currentParagraph = append(currentParagraph, trimmed)
 		}
 	}
-	
+
 	// Add final paragraph if any
 	if len(currentParagraph) > 0 {
 		result = append(result, strings.Join(currentParagraph, " "))
 	}
-	
+
 	return strings.Join(result, "\n")
 }
 
@@ -203,10 +203,10 @@ func renderCommentWithHeader(comment ReviewComment, prefixLen int, bodyWidth int
 }
 
 type FileWithComments struct {
-	Path            string
-	Lines           []string
-	Comments        map[int][]ReviewComment // Line number -> comments
-	HasTrailingNewline bool                 // True if original content ended with newline
+	Path               string
+	Lines              []string
+	Comments           map[int][]ReviewComment // Line number -> comments
+	HasTrailingNewline bool                    // True if original content ended with newline
 }
 
 func NewFileWithComments(path string) *FileWithComments {
@@ -275,7 +275,7 @@ func (f *FileWithComments) Parse(content string) error {
 				if len(f.Lines) > 0 {
 					currentComment.Line = len(f.Lines) // 1-based line number of last added line
 				}
-				
+
 				// This line should not be included in source
 				isStopMarker = true // Mark as consumed so it doesn't get added to source lines
 			} else if strings.HasPrefix(trimmed, shorthandStop) {
@@ -457,7 +457,7 @@ func (f *FileWithComments) Serialize() string {
 				result.WriteString("\n")
 			}
 		}
-		
+
 		// Add trailing newline if original content had one
 		if f.HasTrailingNewline {
 			result.WriteString("\n")

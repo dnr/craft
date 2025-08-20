@@ -519,7 +519,7 @@ func TestParseHeaderFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := parseHeaderFields(tt.header)
-			
+
 			// Check all fields
 			if result.IsNew != tt.expected.IsNew {
 				t.Errorf("IsNew: expected %v, got %v", tt.expected.IsNew, result.IsNew)
@@ -539,7 +539,7 @@ func TestParseHeaderFields(t *testing.T) {
 			if result.StartLine != tt.expected.StartLine {
 				t.Errorf("StartLine: expected %d, got %d", tt.expected.StartLine, result.StartLine)
 			}
-			
+
 			// Check CreatedAt
 			if tt.expected.CreatedAt == nil {
 				if result.CreatedAt != nil {
@@ -558,28 +558,28 @@ func TestParseHeaderFields(t *testing.T) {
 
 func TestTrailingNewlinePreservation(t *testing.T) {
 	tests := []struct {
-		name                string
-		content             string
+		name                  string
+		content               string
 		expectTrailingNewline bool
 	}{
 		{
-			name:                "content with trailing newline",
-			content:             "package main\n\nfunc hello() {}\n",
+			name:                  "content with trailing newline",
+			content:               "package main\n\nfunc hello() {}\n",
 			expectTrailingNewline: true,
 		},
 		{
-			name:                "content without trailing newline",
-			content:             "package main\n\nfunc hello() {}",
+			name:                  "content without trailing newline",
+			content:               "package main\n\nfunc hello() {}",
 			expectTrailingNewline: false,
 		},
 		{
-			name:                "empty content",
-			content:             "",
+			name:                  "empty content",
+			content:               "",
 			expectTrailingNewline: false,
 		},
 		{
-			name:                "single newline",
-			content:             "\n",
+			name:                  "single newline",
+			content:               "\n",
 			expectTrailingNewline: true,
 		},
 	}
@@ -600,7 +600,7 @@ func TestTrailingNewlinePreservation(t *testing.T) {
 			// Serialize and check if trailing newline is preserved
 			serialized := f.Serialize()
 			hasTrailingNewline := len(serialized) > 0 && strings.HasSuffix(serialized, "\n")
-			
+
 			if hasTrailingNewline != tt.expectTrailingNewline {
 				t.Errorf("Serialized trailing newline: expected %v, got %v", tt.expectTrailingNewline, hasTrailingNewline)
 				t.Logf("Serialized content: %q", serialized)

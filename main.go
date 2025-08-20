@@ -148,7 +148,7 @@ func handleSend(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: not on a PR branch (expected %s<number>)\n", BranchPrefix)
 		os.Exit(1)
 	}
-	
+
 	prNumberStr := strings.TrimPrefix(currentBranch, BranchPrefix)
 	prNumber, err := strconv.Atoi(prNumberStr)
 	if err != nil {
@@ -170,14 +170,14 @@ func handleSend(args []string) {
 
 	// Print what would be sent
 	fmt.Printf("Found %d new comment(s) to send to PR #%d:\n\n", len(newComments), prNumber)
-	
+
 	for i, comment := range newComments {
 		fmt.Printf("%d. %s", i+1, comment.FilePath)
 		if comment.Line > 0 {
 			fmt.Printf(":%d", comment.Line)
 		}
 		fmt.Printf("\n")
-		
+
 		// Wrap comment body for console display (80 chars)
 		wrappedLines := wrapText(comment.Body, 80, "   ")
 		for _, line := range wrappedLines {
@@ -190,7 +190,7 @@ func handleSend(args []string) {
 	fmt.Printf("API calls that would be made:\n")
 	fmt.Printf("Repository: %s/%s\n", owner, repo)
 	fmt.Printf("PR: #%d\n", prNumber)
-	
+
 	for i, comment := range newComments {
 		if comment.Line > 0 {
 			fmt.Printf("\nCall %d: POST /repos/%s/%s/pulls/%d/comments\n", i+1, owner, repo, prNumber)
@@ -218,7 +218,7 @@ type CommentToSend struct {
 
 func collectNewComments() ([]CommentToSend, error) {
 	var comments []CommentToSend
-	
+
 	// Check PR-level comments file
 	if content, err := os.ReadFile(PRCommentsFile); err == nil {
 		prComments := NewPRComments()
@@ -238,35 +238,35 @@ func collectNewComments() ([]CommentToSend, error) {
 			}
 		}
 	}
-	
+
 	// Get list of tracked files from git
 	files, err := getTrackedFiles()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tracked files: %v", err)
 	}
-	
+
 	// Check all tracked files for embedded comments
 	for _, path := range files {
 		// Skip certain files
 		if path == PRCommentsFile || strings.HasSuffix(path, ".exe") {
 			continue
 		}
-		
+
 		// Only process files with known comment syntaxes
 		if getLanguageCommentPrefix(path) == "" {
 			continue
 		}
-		
+
 		content, err := os.ReadFile(path)
 		if err != nil {
 			continue // Skip files that can't be read
 		}
-		
+
 		fileWithComments := NewFileWithComments(path)
 		if err := fileWithComments.Parse(string(content)); err != nil {
 			continue // Skip files that can't be parsed
 		}
-		
+
 		for lineNum, commentList := range fileWithComments.Comments {
 			for _, comment := range commentList {
 				if comment.IsNew {
@@ -281,7 +281,7 @@ func collectNewComments() ([]CommentToSend, error) {
 			}
 		}
 	}
-	
+
 	return comments, nil
 }
 
@@ -289,7 +289,7 @@ func unwrapCommentBody(body string) string {
 	lines := strings.Split(body, "\n")
 	var result []string
 	var currentParagraph []string
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -304,11 +304,11 @@ func unwrapCommentBody(body string) string {
 			currentParagraph = append(currentParagraph, trimmed)
 		}
 	}
-	
+
 	// Add final paragraph if any
 	if len(currentParagraph) > 0 {
 		result = append(result, strings.Join(currentParagraph, " "))
 	}
-	
+
 	return strings.Join(result, "\n")
 }

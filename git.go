@@ -232,7 +232,7 @@ func getTrackedFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	var files []string
 	for _, line := range lines {
@@ -240,6 +240,6 @@ func getTrackedFiles() ([]string, error) {
 			files = append(files, line)
 		}
 	}
-	
+
 	return files, nil
 }

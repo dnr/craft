@@ -53,8 +53,7 @@
 
 TODO:
 
-- implement new structured comment header format
-- make `craft get` a sync operation (preserve existing NEW comments) using IDs
+- make `craft get` a sync operation (preserve existing new comments) using IDs
 - use the `reviews` endpoint: `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` to submit multiple comments at once
 - make `craft send` able to approve/request-changes
 - support editing existing comments (mark with `new` + original `id`)
