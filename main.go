@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/google/go-github/v74/github"
 )
 
 const (
@@ -43,8 +45,15 @@ func printUsage() {
 	fmt.Println("craft - GitHub code review tool")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  craft get [<pr#>]    Get PR for review")
-	fmt.Println("  craft send [--go]    Send review comments")
+	fmt.Println("  craft get [<pr#>]                   Get PR for review")
+	fmt.Println("  craft send [options]                Send review comments")
+	fmt.Println()
+	fmt.Println("Send options:")
+	fmt.Println("  --go                               Actually submit the review")
+	fmt.Println("  --approve                          Submit as APPROVE review")
+	fmt.Println("  --request_changes                  Submit as REQUEST_CHANGES review")
+	fmt.Println("  --comment                          Submit as COMMENT review")
+	fmt.Println("  (no event flag)                    Submit as pending/draft review")
 }
 
 func handleGet(args []string) {
@@ -130,9 +139,18 @@ func handleGet(args []string) {
 
 func handleSend(args []string) {
 	goFlag := false
+	var reviewEvent string // "APPROVE", "REQUEST_CHANGES", "COMMENT", or "" (pending)
+	
 	for _, arg := range args {
-		if arg == "--go" {
+		switch arg {
+		case "--go":
 			goFlag = true
+		case "--approve":
+			reviewEvent = "APPROVE"
+		case "--request_changes":
+			reviewEvent = "REQUEST_CHANGES"  
+		case "--comment":
+			reviewEvent = "COMMENT"
 		}
 	}
 
@@ -187,33 +205,55 @@ func handleSend(args []string) {
 	}
 
 	// Print API call details
-	fmt.Printf("API calls that would be made:\n")
+	fmt.Printf("API call that would be made:\n")
 	fmt.Printf("Repository: %s/%s\n", owner, repo)
 	fmt.Printf("PR: #%d\n", prNumber)
-
+	fmt.Printf("POST /repos/%s/%s/pulls/%d/reviews\n", owner, repo, prNumber)
+	
+	if reviewEvent != "" {
+		fmt.Printf("Review Event: %s\n", reviewEvent)
+	} else {
+		fmt.Printf("Review Event: (pending - no event, will be draft)\n")
+	}
+	
+	fmt.Printf("\nReview Comments (%d):\n", len(newComments))
 	for i, comment := range newComments {
 		if comment.Line > 0 {
-			fmt.Printf("\nCall %d: POST /repos/%s/%s/pulls/%d/comments\n", i+1, owner, repo, prNumber)
-			fmt.Printf("  File: %s\n", comment.FilePath)
-			fmt.Printf("  Line: %d\n", comment.Line)
+			fmt.Printf("  %d. %s:%d", i+1, comment.FilePath, comment.Line)
+			if comment.InReplyTo > 0 {
+				fmt.Printf(" (reply to comment %d)", comment.InReplyTo)
+			}
+			fmt.Printf("\n")
 		} else {
-			fmt.Printf("\nCall %d: POST /repos/%s/%s/issues/%d/comments\n", i+1, owner, repo, prNumber)
-			fmt.Printf("  Type: PR-level comment\n")
+			fmt.Printf("  %d. PR-level comment\n", i+1)
 		}
-		fmt.Printf("  Body: %s\n", comment.Body)
+		
+		// Show body with indentation
+		bodyLines := strings.Split(comment.Body, "\n")
+		for _, line := range bodyLines {
+			fmt.Printf("     %s\n", line)
+		}
 	}
 
 	if !goFlag {
 		fmt.Printf("\nUse --go to actually send these comments\n")
 	} else {
-		fmt.Printf("\n--go flag detected - would send comments here\n")
+		fmt.Printf("\nSubmitting review...\n")
+		client := createGitHubClient()
+		err = submitReview(client, owner, repo, prNumber, newComments, reviewEvent)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error submitting review: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Review submitted successfully!\n")
 	}
 }
 
 type CommentToSend struct {
-	FilePath string
-	Line     int
-	Body     string
+	FilePath     string
+	Line         int
+	Body         string
+	InReplyTo    int64 // ID of comment this is replying to (0 if not a reply)
 }
 
 func collectNewComments() ([]CommentToSend, error) {
@@ -268,14 +308,33 @@ func collectNewComments() ([]CommentToSend, error) {
 		}
 
 		for lineNum, commentList := range fileWithComments.Comments {
+			// Find the top-level comment ID for this line (for reply detection)
+			var topLevelCommentID int64
+			for _, comment := range commentList {
+				if !comment.IsNew && comment.ID > 0 && comment.ParentID == 0 {
+					// This is a top-level comment from GitHub
+					topLevelCommentID = comment.ID
+					break
+				}
+			}
+
 			for _, comment := range commentList {
 				if comment.IsNew {
 					// Unwrap the comment body - join lines but preserve explicit newlines
 					body := unwrapCommentBody(comment.Body)
+					
+					// Determine if this should be a reply
+					var inReplyTo int64
+					if topLevelCommentID > 0 {
+						// There's an existing comment on this line, so reply to it
+						inReplyTo = topLevelCommentID
+					}
+					
 					comments = append(comments, CommentToSend{
-						FilePath: path,
-						Line:     lineNum,
-						Body:     body,
+						FilePath:  path,
+						Line:      lineNum,
+						Body:      body,
+						InReplyTo: inReplyTo,
 					})
 				}
 			}
@@ -311,4 +370,55 @@ func unwrapCommentBody(body string) string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+func submitReview(client *github.Client, owner, repo string, prNumber int, comments []CommentToSend, event string) error {
+	ctx := context.Background()
+	
+	// Prepare review comments for GitHub API
+	var reviewComments []*github.DraftReviewComment
+	
+	for _, comment := range comments {
+		if comment.Line > 0 {
+			// This is a line comment
+			draftComment := &github.DraftReviewComment{
+				Path: github.String(comment.FilePath),
+				Line: github.Int(comment.Line),
+				Body: github.String(comment.Body),
+			}
+			
+			// Add reply information if this is a reply
+			if comment.InReplyTo > 0 {
+				draftComment.InReplyTo = github.Int64(comment.InReplyTo)
+			}
+			
+			reviewComments = append(reviewComments, draftComment)
+		}
+	}
+	
+	// Prepare the review request
+	reviewRequest := &github.PullRequestReviewRequest{
+		Comments: reviewComments,
+	}
+	
+	// Add event if specified (otherwise it will be pending/draft)
+	if event != "" {
+		reviewRequest.Event = github.String(event)
+	}
+	
+	// Add PR-level comments as the review body if any
+	var prLevelComments []string
+	for _, comment := range comments {
+		if comment.Line == 0 {
+			prLevelComments = append(prLevelComments, comment.Body)
+		}
+	}
+	if len(prLevelComments) > 0 {
+		reviewBody := strings.Join(prLevelComments, "\n\n")
+		reviewRequest.Body = github.String(reviewBody)
+	}
+	
+	// Submit the review
+	_, _, err := client.PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
+	return err
 }
