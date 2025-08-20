@@ -46,6 +46,35 @@ func (r *ReviewComment) Format() string {
 	return strings.Join(parts, " "+RuleChar+" ")
 }
 
+// unwrapShorthandBody joins lines that aren't separated by empty lines into paragraphs
+func unwrapShorthandBody(body string) string {
+	lines := strings.Split(body, "\n")
+	var result []string
+	var currentParagraph []string
+	
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			// Empty line - end current paragraph if any, add explicit newline
+			if len(currentParagraph) > 0 {
+				result = append(result, strings.Join(currentParagraph, " "))
+				currentParagraph = nil
+			}
+			result = append(result, "")
+		} else {
+			// Non-empty line - add to current paragraph
+			currentParagraph = append(currentParagraph, trimmed)
+		}
+	}
+	
+	// Add final paragraph if any
+	if len(currentParagraph) > 0 {
+		result = append(result, strings.Join(currentParagraph, " "))
+	}
+	
+	return strings.Join(result, "\n")
+}
+
 // orderComments returns comments with existing comments first, then new comments
 func orderComments(comments []ReviewComment) []ReviewComment {
 	existingComments := []ReviewComment{}
@@ -118,6 +147,10 @@ func NewPRComments() *FileWithComments {
 
 func (f *FileWithComments) Parse(content string) error {
 	lines := strings.Split(content, "\n")
+	// Remove empty trailing line if content ends with newline
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	f.Lines = make([]string, 0)
 	f.Comments = make(map[int][]ReviewComment)
 
@@ -159,12 +192,23 @@ func (f *FileWithComments) Parse(content string) error {
 					Body:   strings.TrimSpace(trimmed[len(shorthandStart):]),
 					Author: "",
 				}
+				// Store which line this comment should be attributed to
+				if len(f.Lines) > 0 {
+					currentComment.Line = len(f.Lines) // 1-based line number of last added line
+				}
+				
 				// This line should not be included in source
 				isStopMarker = true // Mark as consumed so it doesn't get added to source lines
 			} else if strings.HasPrefix(trimmed, shorthandStop) {
 				// Stop shorthand comment parsing - finish current comment if any
 				if currentComment != nil && currentComment.IsNew {
-					pendingComments = append(pendingComments, *currentComment)
+					// Unwrap the comment body and attach it immediately if line is set
+					currentComment.Body = unwrapShorthandBody(currentComment.Body)
+					if currentComment.Line > 0 {
+						f.Comments[currentComment.Line] = append(f.Comments[currentComment.Line], *currentComment)
+					} else {
+						pendingComments = append(pendingComments, *currentComment)
+					}
 					currentComment = nil
 				}
 				// This line should not be included in source
@@ -173,13 +217,11 @@ func (f *FileWithComments) Parse(content string) error {
 			} else if currentComment != nil && currentComment.IsNew && strings.HasPrefix(trimmed, languageComment) {
 				// Continuation of shorthand comment - check if it's a regular comment line
 				potentialContent := strings.TrimSpace(trimmed[len(languageComment):])
-				if potentialContent != "" {
-					// Add to current comment body
-					if currentComment.Body != "" {
-						currentComment.Body += "\n"
-					}
-					currentComment.Body += potentialContent
+				// Add to current comment body (empty lines preserved as empty)
+				if currentComment.Body != "" {
+					currentComment.Body += "\n"
 				}
+				currentComment.Body += potentialContent
 				// This line should not be included in source
 				isStopMarker = true
 			} else if strings.Contains(line, " "+CraftMarker+" ") && strings.HasPrefix(trimmed, languageComment) {
@@ -245,9 +287,21 @@ func (f *FileWithComments) Parse(content string) error {
 			// This is a source code line (only for non-PR files, and not a stop marker)
 			f.Lines = append(f.Lines, line)
 
+			// If we have a shorthand comment in progress, finalize it
+			if currentComment != nil && currentComment.IsNew && currentComment.Line > 0 {
+				// Shorthand comment already has its line set, finalize it
+				currentComment.Body = unwrapShorthandBody(currentComment.Body)
+				f.Comments[currentComment.Line] = append(f.Comments[currentComment.Line], *currentComment)
+				currentComment = nil
+			}
+
 			// If we have pending comments, attach them to this line
 			if len(pendingComments) > 0 || currentComment != nil {
 				if currentComment != nil {
+					// Unwrap shorthand comment body before adding
+					if currentComment.IsNew {
+						currentComment.Body = unwrapShorthandBody(currentComment.Body)
+					}
 					pendingComments = append(pendingComments, *currentComment)
 					currentComment = nil
 				}
@@ -255,6 +309,10 @@ func (f *FileWithComments) Parse(content string) error {
 
 				// Fix up range comments - convert negative StartLine markers to actual line numbers
 				for i := range pendingComments {
+					// Unwrap shorthand comment bodies
+					if pendingComments[i].IsNew {
+						pendingComments[i].Body = unwrapShorthandBody(pendingComments[i].Body)
+					}
 					if pendingComments[i].StartLine < 0 {
 						rangeSize := -pendingComments[i].StartLine
 						pendingComments[i].StartLine = lineNum - rangeSize + 1
@@ -273,6 +331,10 @@ func (f *FileWithComments) Parse(content string) error {
 	// Handle any remaining comments (for PR files, attach to line 0)
 	if len(pendingComments) > 0 || currentComment != nil {
 		if currentComment != nil {
+			// Unwrap shorthand comment body before adding
+			if currentComment.IsNew {
+				currentComment.Body = unwrapShorthandBody(currentComment.Body)
+			}
 			pendingComments = append(pendingComments, *currentComment)
 		}
 		attachLine := 0
@@ -282,6 +344,10 @@ func (f *FileWithComments) Parse(content string) error {
 
 		// Fix up range comments for remaining comments too
 		for i := range pendingComments {
+			// Unwrap shorthand comment bodies
+			if pendingComments[i].IsNew {
+				pendingComments[i].Body = unwrapShorthandBody(pendingComments[i].Body)
+			}
 			if pendingComments[i].StartLine < 0 && !f.IsPRComments() {
 				rangeSize := -pendingComments[i].StartLine
 				pendingComments[i].StartLine = attachLine - rangeSize + 1
