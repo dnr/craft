@@ -203,9 +203,10 @@ func renderCommentWithHeader(comment ReviewComment, prefixLen int, bodyWidth int
 }
 
 type FileWithComments struct {
-	Path     string
-	Lines    []string
-	Comments map[int][]ReviewComment // Line number -> comments
+	Path            string
+	Lines           []string
+	Comments        map[int][]ReviewComment // Line number -> comments
+	HasTrailingNewline bool                 // True if original content ended with newline
 }
 
 func NewFileWithComments(path string) *FileWithComments {
@@ -223,6 +224,8 @@ func NewPRComments() *FileWithComments {
 
 func (f *FileWithComments) Parse(content string) error {
 	lines := strings.Split(content, "\n")
+	// Check if content ends with newline and track it
+	f.HasTrailingNewline = len(content) > 0 && strings.HasSuffix(content, "\n")
 	// Remove empty trailing line if content ends with newline
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -453,6 +456,11 @@ func (f *FileWithComments) Serialize() string {
 			if i < len(f.Lines)-1 {
 				result.WriteString("\n")
 			}
+		}
+		
+		// Add trailing newline if original content had one
+		if f.HasTrailingNewline {
+			result.WriteString("\n")
 		}
 	}
 
