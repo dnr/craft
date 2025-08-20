@@ -17,7 +17,7 @@ func hello() {
 	//++ This is a new comment I want to add on Hello
 	return
 }
-// ❯ ───── reviewer ─ 2024-01-15 14:30 ───────────────────────────────────
+// ❯ ───── by reviewer ─ date 2024-01-15 14:30 ─────
 // ❯ This is a comment about the whole function.
 `
 
@@ -89,18 +89,18 @@ func hello() {
 	if !strings.Contains(serialized, CraftMarker) {
 		t.Error("Serialized content should contain comment marker")
 	}
-	if !strings.Contains(serialized, "NEW") {
-		t.Errorf("Serialized output should contain 'NEW' author, got:\n%s", serialized)
+	if !strings.Contains(serialized, "new") {
+		t.Errorf("Serialized output should contain 'new' field, got:\n%s", serialized)
 	}
 }
 
 func TestFileWithComments_ParseAndSerialize_PRComments(t *testing.T) {
-	content := `─────── reviewer ─ 2024-01-15 14:30 ────────────────────────────────────
+	content := `─────── by reviewer ─ date 2024-01-15 14:30 ─────
 This is a PR-level comment with multiple paragraphs.
 
 It has line breaks and should be preserved properly.
 
-─────── alice ─ 2024-01-15 10:00 ───────────────────────────────────────
+─────── by alice ─ date 2024-01-15 10:00 ─────
 Another comment from a different user.`
 
 	f := NewPRComments()
@@ -144,7 +144,7 @@ Another comment from a different user.`
 	if !strings.Contains(serialized, RuleChar) {
 		t.Error("PR comments should contain rule characters")
 	}
-	// Note: This test doesn't have any new comments, so no NEW expected
+	// Note: This test doesn't have any new comments, so no 'new' field expected
 }
 
 func TestFileWithComments_SyncWithGitHubComments(t *testing.T) {
@@ -268,7 +268,7 @@ func TestFormatCommentHeader(t *testing.T) {
 		IsFile:    true,
 	}
 	header := r.Format()
-	expected := "reviewer ─ 2024-01-15 14:30 ─ [file]"
+	expected := "by reviewer ─ date 2024-01-15 14:30 ─ file"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
@@ -278,7 +278,7 @@ func TestFormatCommentHeader(t *testing.T) {
 		Author: "alice",
 	}
 	header = r.Format()
-	expected = "alice"
+	expected = "by alice"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
@@ -289,7 +289,7 @@ func TestFormatCommentHeader(t *testing.T) {
 		CreatedAt: &createdAt,
 	}
 	header = r.Format()
-	expected = "bob ─ 2024-01-15 14:30"
+	expected = "by bob ─ date 2024-01-15 14:30"
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
@@ -365,8 +365,8 @@ func example() {
 	serialized := f.Serialize()
 
 	// Should contain NEW author in headers
-	if !strings.Contains(serialized, "NEW") {
-		t.Errorf("Serialized output should contain 'NEW' author, got:\n%s", serialized)
+	if !strings.Contains(serialized, "new") {
+		t.Errorf("Serialized output should contain 'new' field, got:\n%s", serialized)
 	}
 
 	// Should not contain shorthand syntax in output
@@ -379,4 +379,179 @@ func example() {
 	}
 
 	t.Logf("Serialized output:\n%s", serialized)
+}
+
+func TestNewHeaderFormat(t *testing.T) {
+	createdAt := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		comment  ReviewComment
+		expected string
+	}{
+		{
+			name: "new comment",
+			comment: ReviewComment{
+				IsNew: true,
+			},
+			expected: "new",
+		},
+		{
+			name: "comment with ID",
+			comment: ReviewComment{
+				ID:        12345,
+				Author:    "alice",
+				CreatedAt: &createdAt,
+			},
+			expected: "by alice ─ date 2024-01-15 14:30 ─ id 12345",
+		},
+		{
+			name: "reply comment",
+			comment: ReviewComment{
+				ID:        67890,
+				ParentID:  12345,
+				Author:    "bob",
+				CreatedAt: &createdAt,
+			},
+			expected: "by bob ─ date 2024-01-15 14:30 ─ id 67890 ─ parent 12345",
+		},
+		{
+			name: "file-level comment",
+			comment: ReviewComment{
+				ID:        54321,
+				Author:    "charlie",
+				CreatedAt: &createdAt,
+				IsFile:    true,
+			},
+			expected: "by charlie ─ date 2024-01-15 14:30 ─ id 54321 ─ file",
+		},
+		{
+			name: "range comment",
+			comment: ReviewComment{
+				ID:        98765,
+				Author:    "dave",
+				CreatedAt: &createdAt,
+				Line:      10,
+				StartLine: 7,
+			},
+			expected: "by dave ─ date 2024-01-15 14:30 ─ id 98765 ─ range -4",
+		},
+		{
+			name: "new comment with all fields",
+			comment: ReviewComment{
+				IsNew:     true,
+				ID:        11111,
+				ParentID:  22222,
+				Line:      5,
+				StartLine: 3,
+				IsFile:    true,
+			},
+			expected: "new ─ id 11111 ─ parent 22222 ─ range -3 ─ file",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.comment.Format()
+			if result != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestParseHeaderFields(t *testing.T) {
+	createdAt := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		header   string
+		expected ReviewComment
+	}{
+		{
+			name:   "new comment",
+			header: "new",
+			expected: ReviewComment{
+				IsNew: true,
+			},
+		},
+		{
+			name:   "comment with ID",
+			header: "by alice ─ date 2024-01-15 14:30 ─ id 12345",
+			expected: ReviewComment{
+				Author:    "alice",
+				CreatedAt: &createdAt,
+				ID:        12345,
+			},
+		},
+		{
+			name:   "reply comment",
+			header: "by bob ─ date 2024-01-15 14:30 ─ id 67890 ─ parent 12345",
+			expected: ReviewComment{
+				Author:    "bob",
+				CreatedAt: &createdAt,
+				ID:        67890,
+				ParentID:  12345,
+			},
+		},
+		{
+			name:   "file-level comment",
+			header: "by charlie ─ date 2024-01-15 14:30 ─ id 54321 ─ file",
+			expected: ReviewComment{
+				Author:    "charlie",
+				CreatedAt: &createdAt,
+				ID:        54321,
+				IsFile:    true,
+			},
+		},
+		{
+			name:   "range comment",
+			header: "by dave ─ date 2024-01-15 14:30 ─ id 98765 ─ range -4",
+			expected: ReviewComment{
+				Author:    "dave",
+				CreatedAt: &createdAt,
+				ID:        98765,
+				StartLine: -4, // Temporary marker
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseHeaderFields(tt.header)
+			
+			// Check all fields
+			if result.IsNew != tt.expected.IsNew {
+				t.Errorf("IsNew: expected %v, got %v", tt.expected.IsNew, result.IsNew)
+			}
+			if result.Author != tt.expected.Author {
+				t.Errorf("Author: expected %q, got %q", tt.expected.Author, result.Author)
+			}
+			if result.ID != tt.expected.ID {
+				t.Errorf("ID: expected %d, got %d", tt.expected.ID, result.ID)
+			}
+			if result.ParentID != tt.expected.ParentID {
+				t.Errorf("ParentID: expected %d, got %d", tt.expected.ParentID, result.ParentID)
+			}
+			if result.IsFile != tt.expected.IsFile {
+				t.Errorf("IsFile: expected %v, got %v", tt.expected.IsFile, result.IsFile)
+			}
+			if result.StartLine != tt.expected.StartLine {
+				t.Errorf("StartLine: expected %d, got %d", tt.expected.StartLine, result.StartLine)
+			}
+			
+			// Check CreatedAt
+			if tt.expected.CreatedAt == nil {
+				if result.CreatedAt != nil {
+					t.Errorf("CreatedAt: expected nil, got %v", result.CreatedAt)
+				}
+			} else {
+				if result.CreatedAt == nil {
+					t.Error("CreatedAt: expected non-nil, got nil")
+				} else if !result.CreatedAt.Equal(*tt.expected.CreatedAt) {
+					t.Errorf("CreatedAt: expected %v, got %v", tt.expected.CreatedAt, result.CreatedAt)
+				}
+			}
+		})
+	}
 }

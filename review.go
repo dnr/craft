@@ -14,36 +14,117 @@ import (
 type ReviewComment struct {
 	ID        int64
 	Line      int
-	StartLine int // For range comments, the starting line (0 if not a range)
+	StartLine int    // For range comments, the starting line (0 if not a range)
 	Author    string
 	Body      string
 	CreatedAt *time.Time
-	IsNew     bool // True if this is a new comment to be submitted
-	IsFile    bool // True if this is a file-level comment
+	IsNew     bool  // True if this is a new comment to be submitted
+	IsFile    bool  // True if this is a file-level comment
+	ParentID  int64 // For reply comments, ID of parent comment
 }
 
 func (r *ReviewComment) Format() string {
-	// Format: ───── author ─ date ─ metadata ──────────
+	// Format: ───── field1 ─ field2 ─ ... ─ fieldN ─────
+	var fields []string
 
-	metadata := ""
-	if r.IsFile {
-		metadata = " [file]"
-	} else if r.StartLine > 0 && r.StartLine < r.Line {
-		rangeSize := r.Line - r.StartLine + 1
-		metadata = fmt.Sprintf(" [-%d]", rangeSize)
+	// Author field (or "new" for new comments)
+	if r.IsNew {
+		fields = append(fields, "new")
+	} else {
+		fields = append(fields, "by "+r.Author)
 	}
 
-	parts := []string{r.Author}
-
+	// Date field
 	if r.CreatedAt != nil {
-		parts = append(parts, r.CreatedAt.Format(TimeFormat))
+		fields = append(fields, "date "+r.CreatedAt.Format(TimeFormat))
 	}
 
-	if metadata != "" {
-		parts = append(parts, strings.TrimSpace(metadata))
+	// ID field
+	if r.ID > 0 {
+		fields = append(fields, fmt.Sprintf("id %d", r.ID))
 	}
 
-	return strings.Join(parts, " "+RuleChar+" ")
+	// Parent ID field (for replies)
+	if r.ParentID > 0 {
+		fields = append(fields, fmt.Sprintf("parent %d", r.ParentID))
+	}
+
+	// Range field
+	if r.StartLine > 0 && r.StartLine < r.Line {
+		rangeSize := r.Line - r.StartLine + 1
+		fields = append(fields, fmt.Sprintf("range -%d", rangeSize))
+	}
+
+	// File field
+	if r.IsFile {
+		fields = append(fields, "file")
+	}
+
+	return strings.Join(fields, " "+RuleChar+" ")
+}
+
+// parseHeaderFields parses the new structured header format
+func parseHeaderFields(headerContent string) *ReviewComment {
+	comment := &ReviewComment{
+		IsNew: false,
+		Body:  "",
+	}
+
+	// Strip leading/trailing rule characters and spaces
+	headerContent = strings.Trim(headerContent, RuleChar+" ")
+
+	// Split by rule character separator
+	parts := strings.Split(headerContent, " "+RuleChar+" ")
+	
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Split field into key and value
+		spaceIdx := strings.Index(part, " ")
+		var key, value string
+		if spaceIdx == -1 {
+			// Boolean field (no value)
+			key = part
+			value = "true"
+		} else {
+			key = part[:spaceIdx]
+			value = strings.TrimSpace(part[spaceIdx+1:])
+		}
+
+		// Handle each field type
+		switch key {
+		case "new":
+			comment.IsNew = true
+		case "by":
+			comment.Author = value
+		case "date":
+			if t, err := time.Parse(TimeFormat, value); err == nil {
+				comment.CreatedAt = &t
+			}
+		case "id":
+			if id, err := strconv.ParseInt(value, 10, 64); err == nil {
+				comment.ID = id
+			}
+		case "parent":
+			if parentID, err := strconv.ParseInt(value, 10, 64); err == nil {
+				comment.ParentID = parentID
+			}
+		case "range":
+			if strings.HasPrefix(value, "-") {
+				if rangeSize, err := strconv.Atoi(value[1:]); err == nil && rangeSize > 0 {
+					// We'll set StartLine later when we know the current line
+					comment.StartLine = -rangeSize // Temporary marker
+				}
+			}
+		case "file":
+			comment.IsFile = true
+		}
+	}
+
+	return comment
 }
 
 // unwrapShorthandBody joins lines that aren't separated by empty lines into paragraphs
@@ -95,13 +176,8 @@ func orderComments(comments []ReviewComment) []ReviewComment {
 func renderCommentWithHeader(comment ReviewComment, prefixLen int, bodyWidth int, prefix string) string {
 	var result strings.Builder
 
-	// Create display comment with NEW author for new comments
-	displayComment := comment
-	if comment.IsNew {
-		displayComment.Author = "NEW"
-	}
-
-	headerText := displayComment.Format()
+	// Format the header using the new structured format
+	headerText := comment.Format()
 	leadingDashes := LeadingDashes
 	if prefixLen == 0 {
 		leadingDashes = 7 // For PR comments
@@ -241,41 +317,8 @@ func (f *FileWithComments) Parse(content string) error {
 				if currentComment != nil {
 					pendingComments = append(pendingComments, *currentComment)
 				}
-				// Parse header with rule character separators
-				currentComment = &ReviewComment{
-					IsNew: false,
-					Body:  "",
-				}
-
-				// For source files, strip leading rule characters first
-				headerContent := commentContent
-				// Strip any number of leading rule characters and space
-				headerContent = strings.TrimLeft(headerContent, RuleChar+" ")
-
-				// Split by rule character separator
-				parts := strings.Split(headerContent, " "+RuleChar+" ")
-				if len(parts) >= 1 {
-					currentComment.Author = strings.TrimSpace(parts[0])
-				}
-				if len(parts) >= 2 {
-					dateStr := strings.TrimSpace(parts[1])
-					if t, err := time.Parse(TimeFormat, dateStr); err == nil {
-						currentComment.CreatedAt = &t
-					}
-				}
-				if len(parts) >= 3 {
-					metadata := strings.TrimSpace(parts[2])
-					if metadata == "[file]" {
-						currentComment.IsFile = true
-					} else if strings.HasPrefix(metadata, "[-") && strings.HasSuffix(metadata, "]") {
-						// Parse range metadata like [-3]
-						rangeStr := metadata[2 : len(metadata)-1]
-						if rangeSize, err := strconv.Atoi(rangeStr); err == nil && rangeSize > 0 {
-							// We'll need to set StartLine when we know the current line
-							currentComment.StartLine = -rangeSize // Temporary marker
-						}
-					}
-				}
+				// Parse new structured header format
+				currentComment = parseHeaderFields(commentContent)
 			} else if currentComment != nil {
 				// This is a continuation line
 				if currentComment.Body != "" {
