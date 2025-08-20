@@ -50,7 +50,7 @@ func (r *ReviewComment) Format() string {
 func orderComments(comments []ReviewComment) []ReviewComment {
 	existingComments := []ReviewComment{}
 	newComments := []ReviewComment{}
-	
+
 	for _, comment := range comments {
 		if comment.IsNew {
 			newComments = append(newComments, comment)
@@ -58,20 +58,20 @@ func orderComments(comments []ReviewComment) []ReviewComment {
 			existingComments = append(existingComments, comment)
 		}
 	}
-	
+
 	return append(existingComments, newComments...)
 }
 
 // renderCommentWithHeader renders a comment with header and wrapped body
 func renderCommentWithHeader(comment ReviewComment, prefixLen int, bodyWidth int, prefix string) string {
 	var result strings.Builder
-	
-	// Create display comment with __new__ author for new comments
+
+	// Create display comment with NEW author for new comments
 	displayComment := comment
 	if comment.IsNew {
-		displayComment.Author = "__new__"
+		displayComment.Author = "NEW"
 	}
-	
+
 	headerText := displayComment.Format()
 	leadingDashes := LeadingDashes
 	if prefixLen == 0 {
@@ -87,13 +87,13 @@ func renderCommentWithHeader(comment ReviewComment, prefixLen int, bodyWidth int
 	if bodyWidth < 20 {
 		bodyWidth = 20 // Minimum reasonable width
 	}
-	
+
 	wrappedLines := wrapText(comment.Body, bodyWidth, "")
 	for _, wrappedLine := range wrappedLines {
 		result.WriteString("\n")
 		result.WriteString(prefix + wrappedLine)
 	}
-	
+
 	return result.String()
 }
 
@@ -148,7 +148,7 @@ func (f *FileWithComments) Parse(content string) error {
 			// For source code files: check for shorthand syntax first, then embedded comments
 			shorthandStart := languageComment + "++"
 			shorthandStop := languageComment + "--"
-			
+
 			if strings.HasPrefix(trimmed, shorthandStart) {
 				// Start of shorthand new comment - save previous comment if exists
 				if currentComment != nil {
@@ -160,7 +160,7 @@ func (f *FileWithComments) Parse(content string) error {
 					Author: "",
 				}
 				// This line should not be included in source
-				isStopMarker = true  // Mark as consumed so it doesn't get added to source lines
+				isStopMarker = true // Mark as consumed so it doesn't get added to source lines
 			} else if strings.HasPrefix(trimmed, shorthandStop) {
 				// Stop shorthand comment parsing - finish current comment if any
 				if currentComment != nil && currentComment.IsNew {
@@ -308,12 +308,12 @@ func (f *FileWithComments) Serialize() string {
 	if f.IsPRComments() {
 		// For PR comments file: serialize comments at line 0
 		orderedComments := orderComments(f.Comments[0])
-		
+
 		for i, comment := range orderedComments {
 			if i > 0 {
 				result.WriteString("\n\n")
 			}
-			
+
 			rendered := renderCommentWithHeader(comment, 0, MaxLineLength, "")
 			result.WriteString(rendered + "\n")
 		}
@@ -325,7 +325,7 @@ func (f *FileWithComments) Serialize() string {
 			// Add any comments for this line (after the line)
 			indent := getIndentation(line)
 			orderedComments := orderComments(f.Comments[i+1]) // GitHub uses 1-based line numbers
-			
+
 			for _, comment := range orderedComments {
 				result.WriteString("\n")
 
@@ -335,7 +335,7 @@ func (f *FileWithComments) Serialize() string {
 				prefixLen := len(commentPrefix)
 				bodyWidth := MaxLineLength - len(indent) - len(languageComment) - len(markerSpace)
 				bodyPrefix := indent + languageComment + markerSpace
-				
+
 				rendered := renderCommentWithHeader(comment, prefixLen, bodyWidth, bodyPrefix)
 				result.WriteString(commentPrefix + rendered)
 			}
