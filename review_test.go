@@ -14,7 +14,7 @@ func TestFileWithComments_ParseAndSerialize_SourceFile(t *testing.T) {
 
 func hello() {
 	fmt.Println("Hello")
-	//++ This is a new comment I want to add on Hello
+	//` + `++ This is a new comment I want to add on Hello
 	return
 }
 // ❯ ───── by reviewer ─ date 2024-01-15 14:30 ─────
@@ -301,7 +301,7 @@ func TestFileWithComments_ShorthandSyntax(t *testing.T) {
 import "fmt"
 
 func example() {
-	//++ This is a new shorthand comment.
+	//` + `++ This is a new shorthand comment.
 	// This should be part of the comment.
 	// So should this line.
 	//
@@ -309,7 +309,7 @@ func example() {
 	//-- End of comment
 
 	fmt.Println("Hello")
-	//++ Another comment:
+	//` + `++ Another comment:
 	// Multi-line comment
 	// continues here.
 

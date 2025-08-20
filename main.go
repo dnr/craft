@@ -140,7 +140,7 @@ func handleGet(args []string) {
 func handleSend(args []string) {
 	goFlag := false
 	var reviewEvent string // "APPROVE", "REQUEST_CHANGES", "COMMENT", or "" (pending)
-	
+
 	for _, arg := range args {
 		switch arg {
 		case "--go":
@@ -148,7 +148,7 @@ func handleSend(args []string) {
 		case "--approve":
 			reviewEvent = "APPROVE"
 		case "--request_changes":
-			reviewEvent = "REQUEST_CHANGES"  
+			reviewEvent = "REQUEST_CHANGES"
 		case "--comment":
 			reviewEvent = "COMMENT"
 		}
@@ -209,13 +209,13 @@ func handleSend(args []string) {
 	fmt.Printf("Repository: %s/%s\n", owner, repo)
 	fmt.Printf("PR: #%d\n", prNumber)
 	fmt.Printf("POST /repos/%s/%s/pulls/%d/reviews\n", owner, repo, prNumber)
-	
+
 	if reviewEvent != "" {
 		fmt.Printf("Review Event: %s\n", reviewEvent)
 	} else {
 		fmt.Printf("Review Event: (pending - no event, will be draft)\n")
 	}
-	
+
 	fmt.Printf("\nReview Comments (%d):\n", len(newComments))
 	for i, comment := range newComments {
 		if comment.Line > 0 {
@@ -227,7 +227,7 @@ func handleSend(args []string) {
 		} else {
 			fmt.Printf("  %d. PR-level comment\n", i+1)
 		}
-		
+
 		// Show body with indentation
 		bodyLines := strings.Split(comment.Body, "\n")
 		for _, line := range bodyLines {
@@ -250,10 +250,10 @@ func handleSend(args []string) {
 }
 
 type CommentToSend struct {
-	FilePath     string
-	Line         int
-	Body         string
-	InReplyTo    int64 // ID of comment this is replying to (0 if not a reply)
+	FilePath  string
+	Line      int
+	Body      string
+	InReplyTo int64 // ID of comment this is replying to (0 if not a reply)
 }
 
 func collectNewComments() ([]CommentToSend, error) {
@@ -322,14 +322,14 @@ func collectNewComments() ([]CommentToSend, error) {
 				if comment.IsNew {
 					// Unwrap the comment body - join lines but preserve explicit newlines
 					body := unwrapCommentBody(comment.Body)
-					
+
 					// Determine if this should be a reply
 					var inReplyTo int64
 					if topLevelCommentID > 0 {
 						// There's an existing comment on this line, so reply to it
 						inReplyTo = topLevelCommentID
 					}
-					
+
 					comments = append(comments, CommentToSend{
 						FilePath:  path,
 						Line:      lineNum,
@@ -374,50 +374,78 @@ func unwrapCommentBody(body string) string {
 
 func submitReview(client *github.Client, owner, repo string, prNumber int, comments []CommentToSend, event string) error {
 	ctx := context.Background()
-	
-	// Step 1: Create a pending review with PR-level comments in the body (if any)
-	var reviewBody string
-	var prLevelComments []string
-	for _, comment := range comments {
-		if comment.Line == 0 {
-			prLevelComments = append(prLevelComments, comment.Body)
+
+	// Get PR details to get the head commit SHA
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR details: %v", err)
+	}
+	commitSHA := pr.GetHead().GetSHA()
+
+	// Step 1: Find or create a pending review
+	var review *github.PullRequestReview
+
+	// Check for existing pending reviews
+	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list reviews: %v", err)
+	}
+
+	// Look for an existing pending review by the current user
+	for _, r := range reviews {
+		if r.GetState() == "PENDING" {
+			review = r
+			fmt.Printf("Found existing pending review #%d\n", review.GetID())
+			break
 		}
 	}
-	if len(prLevelComments) > 0 {
-		reviewBody = strings.Join(prLevelComments, "\n\n")
+
+	// Create a new pending review if none exists
+	if review == nil {
+		var reviewBody string
+		var prLevelComments []string
+		for _, comment := range comments {
+			if comment.Line == 0 {
+				prLevelComments = append(prLevelComments, comment.Body)
+			}
+		}
+		if len(prLevelComments) > 0 {
+			reviewBody = strings.Join(prLevelComments, "\n\n")
+		}
+
+		reviewRequest := &github.PullRequestReviewRequest{
+			Body: github.String(reviewBody),
+			// No event - this creates a pending review
+		}
+
+		review, _, err = client.PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
+		if err != nil {
+			return fmt.Errorf("failed to create pending review: %v", err)
+		}
+
+		fmt.Printf("Created pending review #%d\n", review.GetID())
 	}
-	
-	reviewRequest := &github.PullRequestReviewRequest{
-		Body: github.String(reviewBody),
-		// No event - this creates a pending review
-	}
-	
-	review, _, err := client.PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
-	if err != nil {
-		return fmt.Errorf("failed to create pending review: %v", err)
-	}
-	
-	fmt.Printf("Created pending review #%d\n", review.GetID())
-	
+
 	// Step 2: Add individual comments to the review using the comment API
 	for _, comment := range comments {
 		if comment.Line > 0 {
 			commentRequest := &github.PullRequestComment{
-				Path: github.String(comment.FilePath),
-				Line: github.Int(comment.Line),
-				Body: github.String(comment.Body),
+				Path:     github.String(comment.FilePath),
+				Line:     github.Int(comment.Line),
+				Body:     github.String(comment.Body),
+				CommitID: github.String(commitSHA),
 			}
-			
+
 			// Add reply information if this is a reply
 			if comment.InReplyTo > 0 {
 				commentRequest.InReplyTo = github.Int64(comment.InReplyTo)
 			}
-			
+
 			createdComment, _, err := client.PullRequests.CreateComment(ctx, owner, repo, prNumber, commentRequest)
 			if err != nil {
 				return fmt.Errorf("failed to create comment on %s:%d: %v", comment.FilePath, comment.Line, err)
 			}
-			
+
 			fmt.Printf("Added comment #%d on %s:%d", createdComment.GetID(), comment.FilePath, comment.Line)
 			if comment.InReplyTo > 0 {
 				fmt.Printf(" (reply to #%d)", comment.InReplyTo)
@@ -425,22 +453,22 @@ func submitReview(client *github.Client, owner, repo string, prNumber int, comme
 			fmt.Printf("\n")
 		}
 	}
-	
+
 	// Step 3: Submit the review with the chosen event (if specified)
 	if event != "" {
 		submitRequest := &github.PullRequestReviewRequest{
 			Event: github.String(event),
 		}
-		
+
 		_, _, err = client.PullRequests.SubmitReview(ctx, owner, repo, prNumber, review.GetID(), submitRequest)
 		if err != nil {
 			return fmt.Errorf("failed to submit review: %v", err)
 		}
-		
+
 		fmt.Printf("Submitted review as %s\n", event)
 	} else {
 		fmt.Printf("Review left as pending/draft\n")
 	}
-	
+
 	return nil
 }
