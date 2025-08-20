@@ -375,38 +375,8 @@ func unwrapCommentBody(body string) string {
 func submitReview(client *github.Client, owner, repo string, prNumber int, comments []CommentToSend, event string) error {
 	ctx := context.Background()
 	
-	// Prepare review comments for GitHub API
-	var reviewComments []*github.DraftReviewComment
-	
-	for _, comment := range comments {
-		if comment.Line > 0 {
-			// This is a line comment
-			draftComment := &github.DraftReviewComment{
-				Path: github.String(comment.FilePath),
-				Line: github.Int(comment.Line),
-				Body: github.String(comment.Body),
-			}
-			
-			// Add reply information if this is a reply
-			if comment.InReplyTo > 0 {
-				draftComment.InReplyTo = github.Int64(comment.InReplyTo)
-			}
-			
-			reviewComments = append(reviewComments, draftComment)
-		}
-	}
-	
-	// Prepare the review request
-	reviewRequest := &github.PullRequestReviewRequest{
-		Comments: reviewComments,
-	}
-	
-	// Add event if specified (otherwise it will be pending/draft)
-	if event != "" {
-		reviewRequest.Event = github.String(event)
-	}
-	
-	// Add PR-level comments as the review body if any
+	// Step 1: Create a pending review with PR-level comments in the body (if any)
+	var reviewBody string
 	var prLevelComments []string
 	for _, comment := range comments {
 		if comment.Line == 0 {
@@ -414,11 +384,63 @@ func submitReview(client *github.Client, owner, repo string, prNumber int, comme
 		}
 	}
 	if len(prLevelComments) > 0 {
-		reviewBody := strings.Join(prLevelComments, "\n\n")
-		reviewRequest.Body = github.String(reviewBody)
+		reviewBody = strings.Join(prLevelComments, "\n\n")
 	}
 	
-	// Submit the review
-	_, _, err := client.PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
-	return err
+	reviewRequest := &github.PullRequestReviewRequest{
+		Body: github.String(reviewBody),
+		// No event - this creates a pending review
+	}
+	
+	review, _, err := client.PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
+	if err != nil {
+		return fmt.Errorf("failed to create pending review: %v", err)
+	}
+	
+	fmt.Printf("Created pending review #%d\n", review.GetID())
+	
+	// Step 2: Add individual comments to the review using the comment API
+	for _, comment := range comments {
+		if comment.Line > 0 {
+			commentRequest := &github.PullRequestComment{
+				Path: github.String(comment.FilePath),
+				Line: github.Int(comment.Line),
+				Body: github.String(comment.Body),
+			}
+			
+			// Add reply information if this is a reply
+			if comment.InReplyTo > 0 {
+				commentRequest.InReplyTo = github.Int64(comment.InReplyTo)
+			}
+			
+			createdComment, _, err := client.PullRequests.CreateComment(ctx, owner, repo, prNumber, commentRequest)
+			if err != nil {
+				return fmt.Errorf("failed to create comment on %s:%d: %v", comment.FilePath, comment.Line, err)
+			}
+			
+			fmt.Printf("Added comment #%d on %s:%d", createdComment.GetID(), comment.FilePath, comment.Line)
+			if comment.InReplyTo > 0 {
+				fmt.Printf(" (reply to #%d)", comment.InReplyTo)
+			}
+			fmt.Printf("\n")
+		}
+	}
+	
+	// Step 3: Submit the review with the chosen event (if specified)
+	if event != "" {
+		submitRequest := &github.PullRequestReviewRequest{
+			Event: github.String(event),
+		}
+		
+		_, _, err = client.PullRequests.SubmitReview(ctx, owner, repo, prNumber, review.GetID(), submitRequest)
+		if err != nil {
+			return fmt.Errorf("failed to submit review: %v", err)
+		}
+		
+		fmt.Printf("Submitted review as %s\n", event)
+	} else {
+		fmt.Printf("Review left as pending/draft\n")
+	}
+	
+	return nil
 }
