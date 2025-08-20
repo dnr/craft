@@ -225,3 +225,21 @@ func commitEmbeddedComments(prNumber int) error {
 	fmt.Printf("Committed embedded comments for PR #%d\n", prNumber)
 	return nil
 }
+
+func getTrackedFiles() ([]string, error) {
+	cmd := exec.Command("git", "ls-files")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var files []string
+	for _, line := range lines {
+		if line := strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	
+	return files, nil
+}

@@ -9,12 +9,12 @@ import (
 )
 
 func TestFileWithComments_ParseAndSerialize_SourceFile(t *testing.T) {
-	// Test with new header format: ───── author ─ date ─ metadata ──────────
+	// Test with shorthand syntax and existing header format
 	content := `package main
 
 func hello() {
 	fmt.Println("Hello")
-// ❯ +: This is a new comment I want to add
+//++ This is a new comment I want to add
 	return
 }
 // ❯ ───── reviewer ─ 2024-01-15 14:30 ───────────────────────────────────
@@ -96,8 +96,6 @@ This is a PR-level comment with multiple paragraphs.
 
 It has line breaks and should be preserved properly.
 
-+: This is a new comment I want to add to the PR
-
 ─────── alice ─ 2024-01-15 10:00 ───────────────────────────────────────
 Another comment from a different user.`
 
@@ -113,8 +111,8 @@ Another comment from a different user.`
 	}
 
 	// All comments should be at line 0
-	if len(f.Comments[0]) != 3 {
-		t.Errorf("Expected 3 comments at line 0, got %d", len(f.Comments[0]))
+	if len(f.Comments[0]) != 2 {
+		t.Errorf("Expected 2 comments at line 0, got %d", len(f.Comments[0]))
 	}
 
 	// Check first comment
@@ -127,17 +125,11 @@ Another comment from a different user.`
 		t.Error("First comment body should contain expected text")
 	}
 
-	// Check new comment
+	// Check second comment
 	comment2 := f.Comments[0][1]
-	if !comment2.IsNew || comment2.Body != "This is a new comment I want to add to the PR" {
-		t.Errorf("New comment: expected IsNew=true, got IsNew=%v, body=%q", comment2.IsNew, comment2.Body)
-	}
-
-	// Check third comment
-	comment3 := f.Comments[0][2]
-	if comment3.Author != "alice" || comment3.IsNew {
-		t.Errorf("Third comment: expected author=alice, IsNew=false, got author=%s, IsNew=%v",
-			comment3.Author, comment3.IsNew)
+	if comment2.Author != "alice" || comment2.IsNew {
+		t.Errorf("Second comment: expected author=alice, IsNew=false, got author=%s, IsNew=%v",
+			comment2.Author, comment2.IsNew)
 	}
 
 	// Test serialization
@@ -148,9 +140,7 @@ Another comment from a different user.`
 	if !strings.Contains(serialized, RuleChar) {
 		t.Error("PR comments should contain rule characters")
 	}
-	if !strings.Contains(serialized, NewCommentPrefix) {
-		t.Error("PR comments should preserve new comment prefix")
-	}
+	// Note: This test doesn't have any new comments, so no __new__ expected
 }
 
 func TestFileWithComments_SyncWithGitHubComments(t *testing.T) {
@@ -299,4 +289,88 @@ func TestFormatCommentHeader(t *testing.T) {
 	if header != expected {
 		t.Errorf("Expected %q, got %q", expected, header)
 	}
+}
+
+func TestFileWithComments_ShorthandSyntax(t *testing.T) {
+	content := `package main
+
+import "fmt"
+
+func example() {
+//++ This is a new shorthand comment
+// This should be part of the comment
+// So should this line
+//-- End of comment
+
+	fmt.Println("Hello")
+//++ Another comment
+// Multi-line comment
+// continues here
+
+	fmt.Println("Done")
+}`
+
+	f := NewFileWithComments("test.go")
+	err := f.Parse(content)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Check that we found comments on the right lines
+	// First comment should be attached to line after it was parsed (line 11 - "fmt.Println("Hello")")
+	found := false
+	for lineNum, comments := range f.Comments {
+		for _, comment := range comments {
+			if comment.IsNew && strings.Contains(comment.Body, "This is a new shorthand comment") {
+				found = true
+				expectedBody := "This is a new shorthand comment\nThis should be part of the comment\nSo should this line"
+				if comment.Body != expectedBody {
+					t.Errorf("First shorthand comment body:\nExpected: %q\nGot: %q", expectedBody, comment.Body)
+				}
+				t.Logf("Found first shorthand comment on line %d", lineNum)
+				break
+			}
+		}
+	}
+	if !found {
+		t.Error("Should have found first shorthand comment")
+	}
+
+	// Check second comment
+	found = false
+	for lineNum, comments := range f.Comments {
+		for _, comment := range comments {
+			if comment.IsNew && strings.Contains(comment.Body, "Another comment") {
+				found = true
+				expectedBody := "Another comment\nMulti-line comment\ncontinues here"
+				if comment.Body != expectedBody {
+					t.Errorf("Second shorthand comment body:\nExpected: %q\nGot: %q", expectedBody, comment.Body)
+				}
+				t.Logf("Found second shorthand comment on line %d", lineNum)
+				break
+			}
+		}
+	}
+	if !found {
+		t.Error("Should have found second shorthand comment")
+	}
+
+	// Test serialization - should convert to normal format with __new__ author
+	serialized := f.Serialize()
+	
+	// Should contain __new__ author in headers
+	if !strings.Contains(serialized, "__new__") {
+		t.Errorf("Serialized output should contain '__new__' author, got:\n%s", serialized)
+	}
+	
+	// Should not contain shorthand syntax in output
+	if strings.Contains(serialized, "//++") {
+		t.Errorf("Serialized output should not contain shorthand '//++' syntax, got:\n%s", serialized)
+	}
+	
+	if strings.Contains(serialized, "//--") {
+		t.Errorf("Serialized output should not contain shorthand '//--' syntax, got:\n%s", serialized)
+	}
+
+	t.Logf("Serialized output:\n%s", serialized)
 }

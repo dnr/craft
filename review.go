@@ -46,6 +46,57 @@ func (r *ReviewComment) Format() string {
 	return strings.Join(parts, " "+RuleChar+" ")
 }
 
+// orderComments returns comments with existing comments first, then new comments
+func orderComments(comments []ReviewComment) []ReviewComment {
+	existingComments := []ReviewComment{}
+	newComments := []ReviewComment{}
+	
+	for _, comment := range comments {
+		if comment.IsNew {
+			newComments = append(newComments, comment)
+		} else {
+			existingComments = append(existingComments, comment)
+		}
+	}
+	
+	return append(existingComments, newComments...)
+}
+
+// renderCommentWithHeader renders a comment with header and wrapped body
+func renderCommentWithHeader(comment ReviewComment, prefixLen int, bodyWidth int, prefix string) string {
+	var result strings.Builder
+	
+	// Create display comment with __new__ author for new comments
+	displayComment := comment
+	if comment.IsNew {
+		displayComment.Author = "__new__"
+	}
+	
+	headerText := displayComment.Format()
+	leadingDashes := LeadingDashes
+	if prefixLen == 0 {
+		leadingDashes = 7 // For PR comments
+	}
+	rule := createHorizontalRule(prefixLen, headerText, leadingDashes)
+	result.WriteString(rule)
+
+	// Wrapped body lines
+	if bodyWidth <= 0 {
+		bodyWidth = MaxLineLength
+	}
+	if bodyWidth < 20 {
+		bodyWidth = 20 // Minimum reasonable width
+	}
+	
+	wrappedLines := wrapText(comment.Body, bodyWidth, "")
+	for _, wrappedLine := range wrappedLines {
+		result.WriteString("\n")
+		result.WriteString(prefix + wrappedLine)
+	}
+	
+	return result.String()
+}
+
 type FileWithComments struct {
 	Path     string
 	Lines    []string
@@ -78,27 +129,61 @@ func (f *FileWithComments) Parse(content string) error {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		isCommentLine := false
+		isStopMarker := false
 		commentContent := ""
 
 		if f.IsPRComments() {
-			// For PR comments file: check for rule headers or +: lines
+			// For PR comments file: check for rule headers
 			rulePrefix := strings.Repeat(RuleChar, 7)
 			if strings.HasPrefix(trimmed, rulePrefix) {
 				// This is a comment header line
 				isCommentLine = true
 				commentContent = strings.TrimLeft(trimmed, RuleChar+" ")
-			} else if strings.HasPrefix(trimmed, NewCommentPrefix) {
-				// This is a new comment line
-				isCommentLine = true
-				commentContent = NewCommentPrefix + strings.TrimPrefix(trimmed, NewCommentPrefix)
 			} else if currentComment != nil && trimmed != "" {
 				// This is a continuation line of a comment body
 				isCommentLine = true
 				commentContent = trimmed
 			}
 		} else {
-			// For source code files: check for embedded comments with prefix
-			if strings.Contains(line, " "+CraftMarker+" ") && strings.HasPrefix(trimmed, languageComment) {
+			// For source code files: check for shorthand syntax first, then embedded comments
+			shorthandStart := languageComment + "++"
+			shorthandStop := languageComment + "--"
+			
+			if strings.HasPrefix(trimmed, shorthandStart) {
+				// Start of shorthand new comment - save previous comment if exists
+				if currentComment != nil {
+					pendingComments = append(pendingComments, *currentComment)
+				}
+				currentComment = &ReviewComment{
+					IsNew:  true,
+					Body:   strings.TrimSpace(trimmed[len(shorthandStart):]),
+					Author: "",
+				}
+				// This line should not be included in source
+				isStopMarker = true  // Mark as consumed so it doesn't get added to source lines
+			} else if strings.HasPrefix(trimmed, shorthandStop) {
+				// Stop shorthand comment parsing - finish current comment if any
+				if currentComment != nil && currentComment.IsNew {
+					pendingComments = append(pendingComments, *currentComment)
+					currentComment = nil
+				}
+				// This line should not be included in source
+				isCommentLine = false
+				isStopMarker = true
+			} else if currentComment != nil && currentComment.IsNew && strings.HasPrefix(trimmed, languageComment) {
+				// Continuation of shorthand comment - check if it's a regular comment line
+				potentialContent := strings.TrimSpace(trimmed[len(languageComment):])
+				if potentialContent != "" {
+					// Add to current comment body
+					if currentComment.Body != "" {
+						currentComment.Body += "\n"
+					}
+					currentComment.Body += potentialContent
+				}
+				// This line should not be included in source
+				isStopMarker = true
+			} else if strings.Contains(line, " "+CraftMarker+" ") && strings.HasPrefix(trimmed, languageComment) {
+				// Regular embedded comments with craft marker
 				isCommentLine = true
 				markerWithSpaces := " " + CraftMarker + " "
 				if idx := strings.Index(trimmed, markerWithSpaces); idx != -1 {
@@ -109,17 +194,7 @@ func (f *FileWithComments) Parse(content string) error {
 
 		if isCommentLine && commentContent != "" {
 			// Parse comment content
-			if strings.HasPrefix(commentContent, NewCommentPrefix) {
-				// Save previous comment if exists
-				if currentComment != nil {
-					pendingComments = append(pendingComments, *currentComment)
-				}
-				currentComment = &ReviewComment{
-					IsNew:  true,
-					Body:   commentContent[len(NewCommentPrefix):],
-					Author: "",
-				}
-			} else if strings.Contains(commentContent, " "+RuleChar+" ") {
+			if strings.Contains(commentContent, " "+RuleChar+" ") {
 				// Save previous comment if exists
 				if currentComment != nil {
 					pendingComments = append(pendingComments, *currentComment)
@@ -166,8 +241,8 @@ func (f *FileWithComments) Parse(content string) error {
 				}
 				currentComment.Body += commentContent
 			}
-		} else if !f.IsPRComments() {
-			// This is a source code line (only for non-PR files)
+		} else if !f.IsPRComments() && !isStopMarker {
+			// This is a source code line (only for non-PR files, and not a stop marker)
 			f.Lines = append(f.Lines, line)
 
 			// If we have pending comments, attach them to this line
@@ -232,24 +307,15 @@ func (f *FileWithComments) Serialize() string {
 
 	if f.IsPRComments() {
 		// For PR comments file: serialize comments at line 0
-		for i, comment := range f.Comments[0] {
+		orderedComments := orderComments(f.Comments[0])
+		
+		for i, comment := range orderedComments {
 			if i > 0 {
 				result.WriteString("\n\n")
 			}
-
-			if comment.IsNew {
-				result.WriteString(NewCommentPrefix + comment.Body + "\n")
-			} else {
-				headerText := comment.Format()
-				rule := createHorizontalRule(0, headerText, 7)
-				result.WriteString(rule + "\n")
-
-				// Wrap and write body
-				wrappedLines := wrapText(comment.Body, MaxLineLength, "")
-				for _, line := range wrappedLines {
-					result.WriteString(line + "\n")
-				}
-			}
+			
+			rendered := renderCommentWithHeader(comment, 0, MaxLineLength, "")
+			result.WriteString(rendered + "\n")
 		}
 	} else {
 		// For source code files: serialize with comment prefixes
@@ -258,34 +324,20 @@ func (f *FileWithComments) Serialize() string {
 
 			// Add any comments for this line (after the line)
 			indent := getIndentation(line)
-
-			for _, comment := range f.Comments[i+1] { // GitHub uses 1-based line numbers
+			orderedComments := orderComments(f.Comments[i+1]) // GitHub uses 1-based line numbers
+			
+			for _, comment := range orderedComments {
 				result.WriteString("\n")
 
-				if comment.IsNew {
-					// New comment format: just the body with +: prefix
-					result.WriteString(indent + languageComment + " " + CraftMarker + " " + NewCommentPrefix + comment.Body)
-				} else {
-					// Existing comment with header and wrapped body
-					headerText := comment.Format()
-					prefixLen := len(indent + languageComment + " " + CraftMarker + " ")
-					rule := createHorizontalRule(prefixLen, headerText, LeadingDashes)
-
-					result.WriteString(indent + languageComment + " " + CraftMarker + " " + rule)
-
-					// Wrapped body lines
-					markerSpace := " " + CraftMarker + " "
-					bodyWidth := MaxLineLength - len(indent) - len(languageComment) - len(markerSpace)
-					if bodyWidth < 20 {
-						bodyWidth = 20 // Minimum reasonable width
-					}
-
-					wrappedLines := wrapText(comment.Body, bodyWidth, indent)
-					for _, wrappedLine := range wrappedLines {
-						result.WriteString("\n")
-						result.WriteString(indent + languageComment + markerSpace + wrappedLine)
-					}
-				}
+				// Calculate dimensions for comment rendering
+				markerSpace := " " + CraftMarker + " "
+				commentPrefix := indent + languageComment + markerSpace
+				prefixLen := len(commentPrefix)
+				bodyWidth := MaxLineLength - len(indent) - len(languageComment) - len(markerSpace)
+				bodyPrefix := indent + languageComment + markerSpace
+				
+				rendered := renderCommentWithHeader(comment, prefixLen, bodyWidth, bodyPrefix)
+				result.WriteString(commentPrefix + rendered)
 			}
 
 			// Add newline after line (and any comments)
