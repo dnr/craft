@@ -38,3 +38,10 @@
   - **Configuration**: Use git config `craft.remoteName` to specify remote (defaults to "origin")
 - references
   - https://github.com/shurcooL/githubv4 - graphql client for go
+
+TODO:
+
+- make `craft get` a sync operation (preserve existing NEW comments
+- use the `reviews` endpoint: `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` to submit multiple comments at once
+- make `craft send` able to approve/request-changes
+
