@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/go-github/v74/github"
+	"github.com/shurcooL/githubv4"
 )
 
 const (
@@ -375,100 +376,160 @@ func unwrapCommentBody(body string) string {
 func submitReview(client *github.Client, owner, repo string, prNumber int, comments []CommentToSend, event string) error {
 	ctx := context.Background()
 
-	// Get PR details to get the head commit SHA
+	// Get PR details to get the GraphQL node ID and commit SHA
 	pr, _, err := client.PullRequests.Get(ctx, owner, repo, prNumber)
 	if err != nil {
 		return fmt.Errorf("failed to get PR details: %v", err)
 	}
 	commitSHA := pr.GetHead().GetSHA()
 
-	// Step 1: Find or create a pending review
-	var review *github.PullRequestReview
+	// Create GraphQL client using same token
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		// Try reading from gh config
+		token = getGitHubToken()
+		if token == "" {
+			return fmt.Errorf("no GitHub token available")
+		}
+	}
 
-	// Check for existing pending reviews
-	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
+	graphqlClient := githubv4.NewEnterpriseClient("https://api.github.com/graphql", client.Client())
+
+	// Get PR's GraphQL node ID
+	var prQuery struct {
+		Repository struct {
+			PullRequest struct {
+				ID githubv4.ID
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	err = graphqlClient.Query(ctx, &prQuery, map[string]interface{}{
+		"owner":  githubv4.String(owner),
+		"name":   githubv4.String(repo),
+		"number": githubv4.Int(prNumber),
+	})
 	if err != nil {
-		return fmt.Errorf("failed to list reviews: %v", err)
+		return fmt.Errorf("failed to get PR GraphQL ID: %v", err)
 	}
 
-	// Look for an existing pending review by the current user
-	for _, r := range reviews {
-		if r.GetState() == "PENDING" {
-			review = r
-			fmt.Printf("Found existing pending review #%d\n", review.GetID())
-			break
-		}
-	}
+	pullRequestID := prQuery.Repository.PullRequest.ID
 
-	// Create a new pending review if none exists
-	if review == nil {
-		var reviewBody string
-		var prLevelComments []string
-		for _, comment := range comments {
-			if comment.Line == 0 {
-				prLevelComments = append(prLevelComments, comment.Body)
-			}
-		}
-		if len(prLevelComments) > 0 {
-			reviewBody = strings.Join(prLevelComments, "\n\n")
-		}
+	// Build threads for the GraphQL mutation
+	var threads []githubv4.DraftPullRequestReviewThread
+	var reviewBody string
 
-		reviewRequest := &github.PullRequestReviewRequest{
-			Body: github.String(reviewBody),
-			// No event - this creates a pending review
-		}
+	// Group comments by file and line to create threads
+	threadMap := make(map[string][]CommentToSend)
+	var prLevelComments []string
 
-		review, _, err = client.PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
-		if err != nil {
-			return fmt.Errorf("failed to create pending review: %v", err)
-		}
-
-		fmt.Printf("Created pending review #%d\n", review.GetID())
-	}
-
-	// Step 2: Add individual comments to the review using the comment API
 	for _, comment := range comments {
-		if comment.Line > 0 {
-			commentRequest := &github.PullRequestComment{
-				Path:     github.String(comment.FilePath),
-				Line:     github.Int(comment.Line),
-				Body:     github.String(comment.Body),
-				CommitID: github.String(commitSHA),
-			}
-
-			// Add reply information if this is a reply
-			if comment.InReplyTo > 0 {
-				commentRequest.InReplyTo = github.Int64(comment.InReplyTo)
-			}
-
-			createdComment, _, err := client.PullRequests.CreateComment(ctx, owner, repo, prNumber, commentRequest)
-			if err != nil {
-				return fmt.Errorf("failed to create comment on %s:%d: %v", comment.FilePath, comment.Line, err)
-			}
-
-			fmt.Printf("Added comment #%d on %s:%d", createdComment.GetID(), comment.FilePath, comment.Line)
-			if comment.InReplyTo > 0 {
-				fmt.Printf(" (reply to #%d)", comment.InReplyTo)
-			}
-			fmt.Printf("\n")
+		if comment.Line == 0 {
+			prLevelComments = append(prLevelComments, comment.Body)
+		} else {
+			key := fmt.Sprintf("%s:%d", comment.FilePath, comment.Line)
+			threadMap[key] = append(threadMap[key], comment)
 		}
 	}
 
-	// Step 3: Submit the review with the chosen event (if specified)
+	if len(prLevelComments) > 0 {
+		reviewBody = strings.Join(prLevelComments, "\n\n")
+	}
+
+	// Create threads for each file+line combination
+	for location, threadComments := range threadMap {
+		if len(threadComments) == 0 {
+			continue
+		}
+
+		// Use the first comment for the main thread
+		firstComment := threadComments[0]
+		
+		thread := githubv4.DraftPullRequestReviewThread{
+			Path:   githubv4.String(firstComment.FilePath),
+			Line:   githubv4.Int(firstComment.Line),
+			Body:   githubv4.String(firstComment.Body),
+		}
+
+		fmt.Printf("Creating thread at %s: %s\n", location, truncateString(firstComment.Body, 60))
+
+		// Add any additional comments as replies within the thread
+		// Note: This is the key test - can we create replies in the same mutation?
+		for i := 1; i < len(threadComments); i++ {
+			comment := threadComments[i]
+			fmt.Printf("  Additional comment in thread: %s\n", truncateString(comment.Body, 60))
+			if comment.InReplyTo > 0 {
+				fmt.Printf("  (This was supposed to reply to comment %d)\n", comment.InReplyTo)
+			}
+			// TODO: Figure out how to add replies within a thread
+			// The GraphQL schema might not support this in a single mutation
+		}
+
+		threads = append(threads, thread)
+	}
+
+	// Submit the review via GraphQL
+	var reviewEvent *githubv4.PullRequestReviewEvent
 	if event != "" {
-		submitRequest := &github.PullRequestReviewRequest{
-			Event: github.String(event),
+		switch event {
+		case "APPROVE":
+			e := githubv4.PullRequestReviewEventApprove
+			reviewEvent = &e
+		case "REQUEST_CHANGES":
+			e := githubv4.PullRequestReviewEventRequestChanges
+			reviewEvent = &e
+		case "COMMENT":
+			e := githubv4.PullRequestReviewEventComment
+			reviewEvent = &e
 		}
-
-		_, _, err = client.PullRequests.SubmitReview(ctx, owner, repo, prNumber, review.GetID(), submitRequest)
-		if err != nil {
-			return fmt.Errorf("failed to submit review: %v", err)
-		}
-
-		fmt.Printf("Submitted review as %s\n", event)
-	} else {
-		fmt.Printf("Review left as pending/draft\n")
 	}
+
+	var mutation struct {
+		AddPullRequestReview struct {
+			PullRequestReview struct {
+				ID    githubv4.ID
+				State githubv4.PullRequestReviewState
+			}
+		} `graphql:"addPullRequestReview(input: $input)"`
+	}
+
+	// Convert threads slice to the expected type
+	var threadPtrs []*githubv4.DraftPullRequestReviewThread
+	for i := range threads {
+		threadPtrs = append(threadPtrs, &threads[i])
+	}
+
+	input := githubv4.AddPullRequestReviewInput{
+		PullRequestID: pullRequestID,
+		Threads:       &threadPtrs,
+		CommitOID:     (*githubv4.GitObjectID)(&commitSHA),
+	}
+
+	if reviewBody != "" {
+		input.Body = (*githubv4.String)(&reviewBody)
+	}
+	if reviewEvent != nil {
+		input.Event = reviewEvent
+	}
+
+	err = graphqlClient.Mutate(ctx, &mutation, input, nil)
+	if err != nil {
+		return fmt.Errorf("GraphQL review submission failed: %v", err)
+	}
+
+	reviewID := mutation.AddPullRequestReview.PullRequestReview.ID
+	reviewState := mutation.AddPullRequestReview.PullRequestReview.State
+
+	fmt.Printf("GraphQL review submitted successfully!\n")
+	fmt.Printf("Review ID: %s, State: %s\n", reviewID, reviewState)
+	fmt.Printf("Created %d thread(s)\n", len(threads))
 
 	return nil
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
