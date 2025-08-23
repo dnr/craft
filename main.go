@@ -255,6 +255,10 @@ type CommentToSend struct {
 	Line      int
 	Body      string
 	InReplyTo int64 // ID of comment this is replying to (0 if not a reply)
+	
+	// GraphQL metadata for replies
+	InReplyToGraphQLID githubv4.ID // GraphQL ID of comment this is replying to
+	ThreadID           githubv4.ID // GraphQL thread ID this belongs to
 }
 
 func collectNewComments() ([]CommentToSend, error) {
@@ -309,12 +313,12 @@ func collectNewComments() ([]CommentToSend, error) {
 		}
 
 		for lineNum, commentList := range fileWithComments.Comments {
-			// Find the top-level comment ID for this line (for reply detection)
-			var topLevelCommentID int64
+			// Find the top-level comment for this line (for reply detection)
+			var topLevelComment *ReviewComment
 			for _, comment := range commentList {
-				if !comment.IsNew && comment.ID > 0 && comment.ParentID == 0 {
+				if !comment.IsNew && comment.ParentID == 0 {
 					// This is a top-level comment from GitHub
-					topLevelCommentID = comment.ID
+					topLevelComment = &comment
 					break
 				}
 			}
@@ -324,19 +328,21 @@ func collectNewComments() ([]CommentToSend, error) {
 					// Unwrap the comment body - join lines but preserve explicit newlines
 					body := unwrapCommentBody(comment.Body)
 
-					// Determine if this should be a reply
-					var inReplyTo int64
-					if topLevelCommentID > 0 {
-						// There's an existing comment on this line, so reply to it
-						inReplyTo = topLevelCommentID
+					commentToSend := CommentToSend{
+						FilePath: path,
+						Line:     lineNum,
+						Body:     body,
 					}
 
-					comments = append(comments, CommentToSend{
-						FilePath:  path,
-						Line:      lineNum,
-						Body:      body,
-						InReplyTo: inReplyTo,
-					})
+					// Determine if this should be a reply using GraphQL metadata
+					if topLevelComment != nil {
+						// Reply to the existing top-level comment
+						commentToSend.InReplyTo = topLevelComment.ID // For REST API compatibility
+						commentToSend.InReplyToGraphQLID = topLevelComment.GraphQLID
+						commentToSend.ThreadID = topLevelComment.ThreadID
+					}
+
+					comments = append(comments, commentToSend)
 				}
 			}
 		}

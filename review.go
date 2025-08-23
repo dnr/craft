@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v74/github"
+	"github.com/shurcooL/githubv4"
 )
 
 type ReviewComment struct {
@@ -21,6 +22,11 @@ type ReviewComment struct {
 	IsNew     bool  // True if this is a new comment to be submitted
 	IsFile    bool  // True if this is a file-level comment
 	ParentID  int64 // For reply comments, ID of parent comment
+	
+	// GraphQL metadata
+	GraphQLID   githubv4.ID // GraphQL node ID 
+	ThreadID    githubv4.ID // GraphQL thread ID
+	InReplyToID githubv4.ID // GraphQL ID of comment this replies to
 }
 
 func (r *ReviewComment) Format() string {
@@ -545,19 +551,77 @@ func (f *FileWithComments) SyncWithGitHubIssueComments(ghComments []*github.Issu
 }
 
 func embedPRComments(client *github.Client, ctx context.Context, owner, repo string, prNumber int) error {
-	// Get PR review comments (inline comments on code)
-	reviewComments, _, err := client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
-	if err != nil {
-		return fmt.Errorf("failed to fetch PR review comments: %v", err)
+	// Create GraphQL client
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = getGitHubToken()
+		if token == "" {
+			return fmt.Errorf("no GitHub token available")
+		}
 	}
 
-	// Get PR-level comments (issue comments on the PR)
-	prComments, _, err := client.Issues.ListComments(ctx, owner, repo, prNumber, nil)
-	if err != nil {
-		return fmt.Errorf("failed to fetch PR comments: %v", err)
+	graphqlClient := githubv4.NewEnterpriseClient("https://api.github.com/graphql", client.Client())
+
+	// Query PR with review threads and issue comments using GraphQL
+	var query struct {
+		Repository struct {
+			PullRequest struct {
+				ID       githubv4.ID
+				Comments struct {
+					Nodes []struct {
+						ID        githubv4.ID
+						Body      string
+						Author    struct {
+							Login string
+						}
+						CreatedAt githubv4.DateTime
+					}
+				} `graphql:"comments(first: 100)"`
+				ReviewThreads struct {
+					Nodes []struct {
+						ID        githubv4.ID
+						IsResolved bool
+						Comments struct {
+							Nodes []struct {
+								ID              githubv4.ID
+								Body            string
+								Path            string
+								Line            *int
+								OriginalLine    *int
+								StartLine       *int
+								OriginalStartLine *int
+								Author          struct {
+									Login string
+								}
+								CreatedAt       githubv4.DateTime
+							}
+						} `graphql:"comments(first: 100)"`
+					}
+				} `graphql:"reviewThreads(first: 100)"`
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
 
-	// Process PR-level comments first
+	err := graphqlClient.Query(ctx, &query, map[string]interface{}{
+		"owner":  githubv4.String(owner),
+		"name":   githubv4.String(repo),
+		"number": githubv4.Int(prNumber),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch PR comments via GraphQL: %v", err)
+	}
+
+	// Process PR-level comments (issue comments)
+	var prComments []*github.IssueComment
+	for _, comment := range query.Repository.PullRequest.Comments.Nodes {
+		prComments = append(prComments, &github.IssueComment{
+			ID:   github.Int64(int64(len(prComments) + 1)), // Temporary ID
+			User: &github.User{Login: github.String(comment.Author.Login)},
+			Body: github.String(comment.Body),
+			CreatedAt: &github.Timestamp{Time: comment.CreatedAt.Time},
+		})
+	}
+
 	if len(prComments) > 0 {
 		err := processPRLevelComments(PRCommentsFile, prComments)
 		if err != nil {
@@ -565,28 +629,131 @@ func embedPRComments(client *github.Client, ctx context.Context, owner, repo str
 		}
 	}
 
-	// Group review comments by file
-	fileComments := make(map[string][]*github.PullRequestComment)
-	for _, comment := range reviewComments {
-		if comment.GetPath() != "" {
-			fileComments[comment.GetPath()] = append(fileComments[comment.GetPath()], comment)
+	// Process review thread comments with thread information
+	fileComments := make(map[string][]ReviewThreadComment)
+	threadCount := 0
+
+	for _, thread := range query.Repository.PullRequest.ReviewThreads.Nodes {
+		threadCount++
+		for i, comment := range thread.Comments.Nodes {
+			if comment.Path != "" {
+				threadComment := ReviewThreadComment{
+					ID:        comment.ID,
+					ThreadID:  thread.ID,
+					Body:      comment.Body,
+					Path:      comment.Path,
+					Line:      comment.Line,
+					StartLine: comment.StartLine,
+					Author:    comment.Author.Login,
+					CreatedAt: comment.CreatedAt.Time,
+					IsFirst:   i == 0, // First comment in thread is top-level
+				}
+
+				// Note: InReplyTo structure in threads is implicit - replies come after the original comment
+
+				fileComments[comment.Path] = append(fileComments[comment.Path], threadComment)
+			}
 		}
 	}
 
-	// Process each file with comments
+	// Process each file with thread-aware comments
 	for filePath, comments := range fileComments {
-		err := processFileComments(filePath, comments)
+		err := processFileThreadComments(filePath, comments)
 		if err != nil {
-			return fmt.Errorf("failed to process comments in %s: %v", filePath, err)
+			return fmt.Errorf("failed to process thread comments in %s: %v", filePath, err)
 		}
 	}
 
-	fmt.Printf("Embedded comments in %d files", len(fileComments))
+	fmt.Printf("Embedded comments from %d threads in %d files", threadCount, len(fileComments))
 	if len(prComments) > 0 {
 		fmt.Printf(" + %d PR comments", len(prComments))
 	}
 	fmt.Println()
 	return nil
+}
+
+type ReviewThreadComment struct {
+	ID          githubv4.ID
+	ThreadID    githubv4.ID
+	Body        string
+	Path        string
+	Line        *int
+	StartLine   *int
+	Author      string
+	CreatedAt   time.Time
+	IsFirst     bool        // True if this is the first comment in the thread (top-level)
+	InReplyToID githubv4.ID // GraphQL ID of comment this replies to
+}
+
+func processFileThreadComments(filePath string, threadComments []ReviewThreadComment) error {
+	// Read existing file
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	// Parse into intermediate representation
+	fileWithComments := NewFileWithComments(filePath)
+	err = fileWithComments.Parse(string(content))
+	if err != nil {
+		return err
+	}
+
+	// Clear existing non-new comments and rebuild with thread info
+	for lineNum, comments := range fileWithComments.Comments {
+		var newComments []ReviewComment
+		for _, comment := range comments {
+			if comment.IsNew {
+				newComments = append(newComments, comment)
+			}
+		}
+		if len(newComments) > 0 {
+			fileWithComments.Comments[lineNum] = newComments
+		} else {
+			delete(fileWithComments.Comments, lineNum)
+		}
+	}
+
+	// Add thread comments with proper metadata
+	for _, threadComment := range threadComments {
+		lineNum := 1
+		if threadComment.Line != nil {
+			lineNum = *threadComment.Line
+		}
+
+		// Convert thread comment to ReviewComment with thread metadata
+		comment := ReviewComment{
+			ID:        0, // Keep 0 for REST API compatibility
+			Line:      lineNum,
+			StartLine: 0,
+			Author:    threadComment.Author,
+			Body:      threadComment.Body,
+			CreatedAt: &threadComment.CreatedAt,
+			IsNew:     false,
+			IsFile:    (threadComment.Line == nil),
+			ParentID:  0, // 0 for top-level, non-zero for replies
+			
+			// Store GraphQL metadata
+			GraphQLID:   threadComment.ID,
+			ThreadID:    threadComment.ThreadID,
+			InReplyToID: threadComment.InReplyToID,
+		}
+
+		if threadComment.StartLine != nil {
+			comment.StartLine = *threadComment.StartLine
+		}
+
+		// For replies, set ParentID to non-zero to indicate it's a reply
+		if threadComment.InReplyToID != "" && !threadComment.IsFirst {
+			comment.ParentID = 1 // Mark as reply for existing logic
+		}
+
+		fileWithComments.Comments[lineNum] = append(fileWithComments.Comments[lineNum], comment)
+	}
+
+	// Write back to disk
+	serialized := fileWithComments.Serialize()
+	return os.WriteFile(filePath, []byte(serialized), 0644)
 }
 
 func processFileComments(filePath string, ghComments []*github.PullRequestComment) error {
