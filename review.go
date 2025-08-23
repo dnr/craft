@@ -351,7 +351,11 @@ func (f *FileWithComments) Parse(content string) error {
 					pendingComments = append(pendingComments, *currentComment)
 					currentComment = nil
 				}
-				lineNum := len(f.Lines) // 1-based line number for the line we just added
+				// Comments follow the line they apply to, so attach to previous line
+				lineNum := len(f.Lines) - 1 // Previous source line
+				if lineNum < 1 {
+					lineNum = 1 // Minimum line number
+				}
 
 				// Fix up range comments - convert negative StartLine markers to actual line numbers
 				for i := range pendingComments {
