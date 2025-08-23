@@ -340,6 +340,7 @@ func collectNewComments() ([]CommentToSend, error) {
 						commentToSend.InReplyTo = topLevelComment.ID // For REST API compatibility
 						commentToSend.InReplyToGraphQLID = topLevelComment.GraphQLID
 						commentToSend.ThreadID = topLevelComment.ThreadID
+						fmt.Printf("DEBUG: Reply detected - ThreadID: %s\n", topLevelComment.ThreadID)
 					}
 
 					comments = append(comments, commentToSend)
@@ -421,114 +422,135 @@ func submitReview(client *github.Client, owner, repo string, prNumber int, comme
 
 	pullRequestID := prQuery.Repository.PullRequest.ID
 
-	// Build threads for the GraphQL mutation
-	var threads []githubv4.DraftPullRequestReviewThread
-	var reviewBody string
 
-	// Group comments by file and line to create threads
-	threadMap := make(map[string][]CommentToSend)
+	// Separate PR-level comments from file comments
 	var prLevelComments []string
+	var fileComments []CommentToSend
 
 	for _, comment := range comments {
 		if comment.Line == 0 {
 			prLevelComments = append(prLevelComments, comment.Body)
 		} else {
-			key := fmt.Sprintf("%s:%d", comment.FilePath, comment.Line)
-			threadMap[key] = append(threadMap[key], comment)
+			fileComments = append(fileComments, comment)
 		}
 	}
 
+	reviewBody := ""
 	if len(prLevelComments) > 0 {
 		reviewBody = strings.Join(prLevelComments, "\n\n")
 	}
 
-	// Create threads for each file+line combination
-	for location, threadComments := range threadMap {
-		if len(threadComments) == 0 {
-			continue
+	// Separate new threads from replies to existing threads
+	var newThreads []CommentToSend
+	var replyComments []CommentToSend
+
+	for _, comment := range fileComments {
+		if comment.ThreadID != "" {
+			// This is a reply to an existing thread
+			replyComments = append(replyComments, comment)
+		} else {
+			// This is a new thread
+			newThreads = append(newThreads, comment)
 		}
+	}
 
-		// Use the first comment for the main thread
-		firstComment := threadComments[0]
-		
-		thread := githubv4.DraftPullRequestReviewThread{
-			Path:   githubv4.String(firstComment.FilePath),
-			Line:   githubv4.Int(firstComment.Line),
-			Body:   githubv4.String(firstComment.Body),
-		}
+	var reviewID githubv4.ID
+	newThreadCount := 0
+	replyCount := 0
 
-		fmt.Printf("Creating thread at %s: %s\n", location, truncateString(firstComment.Body, 60))
-
-		// Add any additional comments as replies within the thread
-		// Note: This is the key test - can we create replies in the same mutation?
-		for i := 1; i < len(threadComments); i++ {
-			comment := threadComments[i]
-			fmt.Printf("  Additional comment in thread: %s\n", truncateString(comment.Body, 60))
-			if comment.InReplyTo > 0 {
-				fmt.Printf("  (This was supposed to reply to comment %d)\n", comment.InReplyTo)
+	// Step 1: Create review with new threads (if any)
+	if len(newThreads) > 0 || reviewBody != "" {
+		var reviewEvent *githubv4.PullRequestReviewEvent
+		if event != "" {
+			switch event {
+			case "APPROVE":
+				e := githubv4.PullRequestReviewEventApprove
+				reviewEvent = &e
+			case "REQUEST_CHANGES":
+				e := githubv4.PullRequestReviewEventRequestChanges
+				reviewEvent = &e
+			case "COMMENT":
+				e := githubv4.PullRequestReviewEventComment
+				reviewEvent = &e
 			}
-			// TODO: Figure out how to add replies within a thread
-			// The GraphQL schema might not support this in a single mutation
 		}
 
-		threads = append(threads, thread)
-	}
-
-	// Submit the review via GraphQL
-	var reviewEvent *githubv4.PullRequestReviewEvent
-	if event != "" {
-		switch event {
-		case "APPROVE":
-			e := githubv4.PullRequestReviewEventApprove
-			reviewEvent = &e
-		case "REQUEST_CHANGES":
-			e := githubv4.PullRequestReviewEventRequestChanges
-			reviewEvent = &e
-		case "COMMENT":
-			e := githubv4.PullRequestReviewEventComment
-			reviewEvent = &e
-		}
-	}
-
-	var mutation struct {
-		AddPullRequestReview struct {
-			PullRequestReview struct {
-				ID    githubv4.ID
-				State githubv4.PullRequestReviewState
+		// Build threads for new comments
+		var threads []*githubv4.DraftPullRequestReviewThread
+		for _, comment := range newThreads {
+			thread := &githubv4.DraftPullRequestReviewThread{
+				Path: githubv4.String(comment.FilePath),
+				Line: githubv4.Int(comment.Line),
+				Body: githubv4.String(comment.Body),
 			}
-		} `graphql:"addPullRequestReview(input: $input)"`
+			threads = append(threads, thread)
+		}
+
+		var reviewMutation struct {
+			AddPullRequestReview struct {
+				PullRequestReview struct {
+					ID    githubv4.ID
+					State githubv4.PullRequestReviewState
+				}
+			} `graphql:"addPullRequestReview(input: $input)"`
+		}
+
+		input := githubv4.AddPullRequestReviewInput{
+			PullRequestID: pullRequestID,
+			Threads:       &threads,
+			CommitOID:     (*githubv4.GitObjectID)(&commitSHA),
+		}
+
+		if reviewBody != "" {
+			input.Body = (*githubv4.String)(&reviewBody)
+		}
+		if reviewEvent != nil {
+			input.Event = reviewEvent
+		}
+
+		err = graphqlClient.Mutate(ctx, &reviewMutation, input, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create review: %v", err)
+		}
+
+		reviewID = reviewMutation.AddPullRequestReview.PullRequestReview.ID
+		newThreadCount = len(newThreads)
+		fmt.Printf("Created review %s with %d new threads\n", reviewID, newThreadCount)
 	}
 
-	// Convert threads slice to the expected type
-	var threadPtrs []*githubv4.DraftPullRequestReviewThread
-	for i := range threads {
-		threadPtrs = append(threadPtrs, &threads[i])
+	// Step 2: Add replies to existing threads
+	for _, comment := range replyComments {
+		var replyMutation struct {
+			AddPullRequestReviewThreadReply struct {
+				Comment struct {
+					ID githubv4.ID
+				}
+			} `graphql:"addPullRequestReviewThreadReply(input: $input)"`
+		}
+
+		replyInput := map[string]interface{}{
+			"pullRequestReviewThreadId": comment.ThreadID,
+			"body":                      githubv4.String(comment.Body),
+			"clientMutationId":          githubv4.String(fmt.Sprintf("craft-reply-%d", replyCount+1)),
+		}
+
+		// Add pullRequestReviewId if we have one
+		if reviewID != "" {
+			replyInput["pullRequestReviewId"] = reviewID
+		}
+
+		err = graphqlClient.Mutate(ctx, &replyMutation, replyInput, nil)
+		if err != nil {
+			fmt.Printf("Warning: failed to add reply: %v\n", err)
+		} else {
+			fmt.Printf("Added reply to thread at %s:%d\n", comment.FilePath, comment.Line)
+			replyCount++
+		}
 	}
 
-	input := githubv4.AddPullRequestReviewInput{
-		PullRequestID: pullRequestID,
-		Threads:       &threadPtrs,
-		CommitOID:     (*githubv4.GitObjectID)(&commitSHA),
-	}
-
-	if reviewBody != "" {
-		input.Body = (*githubv4.String)(&reviewBody)
-	}
-	if reviewEvent != nil {
-		input.Event = reviewEvent
-	}
-
-	err = graphqlClient.Mutate(ctx, &mutation, input, nil)
-	if err != nil {
-		return fmt.Errorf("GraphQL review submission failed: %v", err)
-	}
-
-	reviewID := mutation.AddPullRequestReview.PullRequestReview.ID
-	reviewState := mutation.AddPullRequestReview.PullRequestReview.State
-
-	fmt.Printf("GraphQL review submitted successfully!\n")
-	fmt.Printf("Review ID: %s, State: %s\n", reviewID, reviewState)
-	fmt.Printf("Created %d thread(s)\n", len(threads))
+	fmt.Printf("GraphQL submission completed!\n")
+	fmt.Printf("Review ID: %s\n", reviewID)
+	fmt.Printf("Created %d new thread(s) and %d reply(s)\n", newThreadCount, replyCount)
 
 	return nil
 }
