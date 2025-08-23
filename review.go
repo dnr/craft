@@ -723,7 +723,7 @@ func processFileThreadComments(filePath string, threadComments []ReviewThreadCom
 
 		// Convert thread comment to ReviewComment with thread metadata
 		comment := ReviewComment{
-			ID:        0, // Keep 0 for REST API compatibility
+			ID:        1, // Set to 1 for compatibility so reply detection works
 			Line:      lineNum,
 			StartLine: 0,
 			Author:    threadComment.Author,
