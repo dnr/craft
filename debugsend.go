@@ -126,7 +126,7 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Found %d new thread(s) and %d reply/replies to send.\n", len(newThreads), len(replies))
 
 	if flagDryRun {
-		fmt.Println("\n=== DRY RUN - would send: ===")
+		fmt.Println("\n=== DRY RUN - would send as single review: ===")
 		for _, t := range newThreads {
 			fmt.Printf("\nNew thread on %s:%d (%s side):\n  %s\n", t.path, t.line, t.side, t.body)
 		}
@@ -145,25 +145,40 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 
 	ctx := cmd.Context()
 
-	// Send new threads
+	// Get or create a single pending review for all comments
+	fmt.Print("Getting/creating pending review... ")
+	reviewID, err := client.getOrCreatePendingReview(ctx, pr.ID, pr.HeadRefOID)
+	if err != nil {
+		return fmt.Errorf("getting/creating review: %w", err)
+	}
+	fmt.Println("done")
+
+	// Add all new threads to the review
 	for _, t := range newThreads {
-		fmt.Printf("Creating thread on %s:%d... ", t.path, t.line)
-		threadID, err := client.CreateReviewThread(ctx, pr.ID, t.path, t.line, t.side, t.subject, t.body)
+		fmt.Printf("Adding thread on %s:%d... ", t.path, t.line)
+		threadID, err := client.addReviewThread(ctx, pr.ID, reviewID, t.path, t.line, t.side, t.subject, t.body)
 		if err != nil {
-			return fmt.Errorf("creating thread: %w", err)
+			return fmt.Errorf("adding thread: %w", err)
 		}
 		fmt.Printf("done (id: %s)\n", threadID)
 	}
 
-	// Send replies
+	// Add all replies to the review
 	for _, r := range replies {
-		fmt.Printf("Creating reply in thread %s:%d... ", r.threadPath, r.threadLine)
-		commentID, err := client.CreateReviewReply(ctx, pr.ID, pr.HeadRefOID, r.replyToNodeID, r.body)
+		fmt.Printf("Adding reply in thread %s:%d... ", r.threadPath, r.threadLine)
+		commentID, err := client.addReviewComment(ctx, reviewID, r.replyToNodeID, r.body)
 		if err != nil {
-			return fmt.Errorf("creating reply: %w", err)
+			return fmt.Errorf("adding reply: %w", err)
 		}
 		fmt.Printf("done (id: %s)\n", commentID)
 	}
+
+	// Submit the review
+	fmt.Print("Submitting review... ")
+	if err := client.submitReview(ctx, reviewID); err != nil {
+		return fmt.Errorf("submitting review: %w", err)
+	}
+	fmt.Println("done")
 
 	fmt.Println("\nAll comments sent successfully!")
 	return nil
@@ -184,8 +199,8 @@ type replyRequest struct {
 	replyToNodeID string
 }
 
-// CreateReviewThread creates a new review thread with a single comment (immediately submitted).
-func (c *GitHubClient) CreateReviewThread(ctx context.Context, prNodeID, path string, line int, side DiffSide, subject SubjectType, body string) (string, error) {
+// addReviewThread adds a new thread to a pending review.
+func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, reviewID githubv4.ID, path string, line int, side DiffSide, subject SubjectType, body string) (string, error) {
 	var mutation struct {
 		AddPullRequestReviewThread struct {
 			Thread struct {
@@ -199,11 +214,12 @@ func (c *GitHubClient) CreateReviewThread(ctx context.Context, prNodeID, path st
 	prID := githubv4.ID(prNodeID)
 
 	input := githubv4.AddPullRequestReviewThreadInput{
-		PullRequestID: &prID,
-		Path:          githubv4.String(path),
-		Body:          githubv4.String(body),
-		Line:          &lineVal,
-		Side:          &sideVal,
+		PullRequestID:       &prID,
+		PullRequestReviewID: &reviewID,
+		Path:                githubv4.String(path),
+		Body:                githubv4.String(body),
+		Line:                &lineVal,
+		Side:                &sideVal,
 	}
 
 	if subject == SubjectTypeLine {
@@ -222,19 +238,15 @@ func (c *GitHubClient) CreateReviewThread(ctx context.Context, prNodeID, path st
 		return "", fmt.Errorf("addPullRequestReviewThread mutation failed: %w", err)
 	}
 
+	if mutation.AddPullRequestReviewThread.Thread.ID == nil {
+		return "", fmt.Errorf("addPullRequestReviewThread returned nil thread ID")
+	}
+
 	return string(mutation.AddPullRequestReviewThread.Thread.ID.(string)), nil
 }
 
-// CreateReviewReply creates a reply to an existing comment.
-// This requires a pending review, either existing or newly created.
-func (c *GitHubClient) CreateReviewReply(ctx context.Context, prNodeID, commitOID, replyToNodeID, body string) (string, error) {
-	// Check for existing pending review, or create a new one
-	reviewID, err := c.getOrCreatePendingReview(ctx, prNodeID, commitOID)
-	if err != nil {
-		return "", fmt.Errorf("getting/creating review: %w", err)
-	}
-
-	// Add the comment to the review
+// addReviewComment adds a reply comment to a pending review.
+func (c *GitHubClient) addReviewComment(ctx context.Context, reviewID githubv4.ID, replyToNodeID, body string) (string, error) {
 	var mutation struct {
 		AddPullRequestReviewComment struct {
 			Comment struct {
@@ -260,14 +272,7 @@ func (c *GitHubClient) CreateReviewReply(ctx context.Context, prNodeID, commitOI
 		return "", fmt.Errorf("addPullRequestReviewComment mutation failed: %w", err)
 	}
 
-	commentID := string(mutation.AddPullRequestReviewComment.Comment.ID.(string))
-
-	// Submit the review immediately (as COMMENT, not approval/rejection)
-	if err := c.submitReview(ctx, reviewID); err != nil {
-		return commentID, fmt.Errorf("submitting review: %w", err)
-	}
-
-	return commentID, nil
+	return string(mutation.AddPullRequestReviewComment.Comment.ID.(string)), nil
 }
 
 // getOrCreatePendingReview finds an existing pending review or creates a new one.
