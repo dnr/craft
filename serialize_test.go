@@ -237,7 +237,7 @@ func main() {
 	fmt.Println("world")
 }
 `
-	prState := `───── pr ─ number 42 ─ id pr kwDOPgi5ks6k-agY ─ head abc123 ─────
+	prState := `───── pr ─ number 42 ─ pr kwDOPgi5ks6k-agY ─ head abc123 ─────
 
 ───── by dave ─ at 2025-01-17 10:00 ─ ic kwDOPgi5ks1234567 ─────
 Overall LGTM!
@@ -245,8 +245,8 @@ Overall LGTM!
 `
 
 	memfs := fstest.MapFS{
-		"main.go":    &fstest.MapFile{Data: []byte(mainGoWithComments)},
-		prStateFile:  &fstest.MapFile{Data: []byte(prState)},
+		"main.go":   &fstest.MapFile{Data: []byte(mainGoWithComments)},
+		prStateFile: &fstest.MapFile{Data: []byte(prState)},
 	}
 
 	// Deserialize
@@ -263,34 +263,13 @@ Overall LGTM!
 	require.Len(t, pr.IssueComments, 1)
 	assert.Equal(t, "Overall LGTM!", pr.IssueComments[0].Body)
 
-	// Now serialize back - need fresh files without comments
-	memfs2 := fstest.MapFS{
-		"main.go": &fstest.MapFile{
-			Data: []byte(`package main
-
-import "fmt"
-
-func main() {
-	fmt.Println("hello")
-	fmt.Println("world")
-}
-`),
-		},
-	}
-	opts2 := SerializeOptions{FS: memfs2}
-	err = Serialize(pr, opts2)
+	// Serialize right on top of existing files (should be idempotent)
+	err = Serialize(pr, opts)
 	require.NoError(t, err)
 
-	// Deserialize again
-	pr2, err := Deserialize(opts2)
-	require.NoError(t, err)
-
-	// Should match original
-	assert.Equal(t, pr.Number, pr2.Number)
-	require.Len(t, pr2.ReviewThreads, 1)
-	assert.Equal(t, pr.ReviewThreads[0].Path, pr2.ReviewThreads[0].Path)
-	assert.Equal(t, pr.ReviewThreads[0].Line, pr2.ReviewThreads[0].Line)
-	assert.Equal(t, pr.ReviewThreads[0].Comments[0].Body, pr2.ReviewThreads[0].Comments[0].Body)
+	// Check for exact byte match
+	assert.Equal(t, mainGoWithComments, string(memfs["main.go"].Data))
+	assert.Equal(t, prState, string(memfs[prStateFile].Data))
 }
 
 func TestNewCommentRoundTrip(t *testing.T) {

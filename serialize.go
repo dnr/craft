@@ -269,8 +269,15 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 		return fmt.Errorf("reading file: %w", err)
 	}
 
-	lines := strings.Split(string(content), "\n")
 	style := getCommentStyle(path)
+
+	// Strip existing craft comments to make serialization idempotent
+	var lines []string
+	for _, line := range strings.Split(string(content), "\n") {
+		if !strings.Contains(line, " "+craftPrefix+" ") {
+			lines = append(lines, line)
+		}
+	}
 
 	// Sort threads by line number (descending) so we insert from bottom to top
 	// This way line numbers don't shift as we insert
@@ -350,7 +357,7 @@ func serializePRState(pr *PullRequest, fsys fs.FS) error {
 	metaFields := []string{
 		"pr",
 		fmt.Sprintf("number %d", pr.Number),
-		"id " + formatNodeID(pr.ID),
+		formatNodeID(pr.ID),
 		"head " + pr.HeadRefOID,
 	}
 	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + " " + headerStart + "\n")
