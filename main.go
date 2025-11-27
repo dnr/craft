@@ -21,6 +21,8 @@ func main() {
 }
 
 func init() {
+	rootCmd.AddCommand(getCmd)
+	rootCmd.AddCommand(sendCmd)
 	rootCmd.AddCommand(debugFetchCmd)
 	rootCmd.AddCommand(debugCommentCmd)
 	rootCmd.AddCommand(debugSendCmd)
