@@ -3,14 +3,25 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"testing/fstest"
 	"time"
 )
+
+// DirFS wraps a directory path and implements fs.FS.
+type DirFS string
+
+func (d DirFS) Open(name string) (fs.File, error) {
+	return os.Open(filepath.Join(string(d), name))
+}
+
+func (d DirFS) Root() string { return string(d) }
 
 const (
 	craftPrefix    = "❯"
@@ -206,10 +217,10 @@ func parseHeader(line string) (Header, bool) {
 
 // SerializeOptions configures serialization behavior.
 type SerializeOptions struct {
-	WorkDir string // Working directory (repo root)
+	FS fs.FS // Filesystem to read/write (use *os.Root or fstest.MapFS)
 }
 
-// Serialize writes the PR data to files in the working directory.
+// Serialize writes the PR data to files in the filesystem.
 func Serialize(pr *PullRequest, opts SerializeOptions) error {
 	// Group threads by file path
 	threadsByFile := make(map[string][]ReviewThread)
@@ -219,25 +230,41 @@ func Serialize(pr *PullRequest, opts SerializeOptions) error {
 
 	// Process each file
 	for path, threads := range threadsByFile {
-		if err := serializeFileComments(opts.WorkDir, path, threads); err != nil {
+		if err := serializeFileComments(opts.FS, path, threads); err != nil {
 			return fmt.Errorf("serializing %s: %w", path, err)
 		}
 	}
 
 	// Write PR-STATE.txt
-	if err := serializePRState(pr, opts.WorkDir); err != nil {
+	if err := serializePRState(pr, opts.FS); err != nil {
 		return fmt.Errorf("serializing PR state: %w", err)
 	}
 
 	return nil
 }
 
-// serializeFileComments writes review threads as comments into a source file.
-func serializeFileComments(workDir, path string, threads []ReviewThread) error {
-	fullPath := filepath.Join(workDir, path)
+// fsReadFile reads a file from the filesystem.
+func fsReadFile(fsys fs.FS, name string) ([]byte, error) {
+	return fs.ReadFile(fsys, name)
+}
 
+// fsWriteFile writes a file to the filesystem.
+func fsWriteFile(fsys fs.FS, name string, data []byte) error {
+	switch f := fsys.(type) {
+	case fstest.MapFS:
+		f[name] = &fstest.MapFile{Data: data}
+		return nil
+	case DirFS:
+		return os.WriteFile(filepath.Join(string(f), name), data, 0644)
+	default:
+		return fmt.Errorf("unsupported filesystem type %T for writing", fsys)
+	}
+}
+
+// serializeFileComments writes review threads as comments into a source file.
+func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) error {
 	// Read original file
-	content, err := os.ReadFile(fullPath)
+	content, err := fsReadFile(fsys, path)
 	if err != nil {
 		return fmt.Errorf("reading file: %w", err)
 	}
@@ -312,11 +339,11 @@ func serializeFileComments(workDir, path string, threads []ReviewThread) error {
 	}
 
 	// Write back
-	return os.WriteFile(fullPath, []byte(strings.Join(lines, "\n")), 0644)
+	return fsWriteFile(fsys, path, []byte(strings.Join(lines, "\n")))
 }
 
 // serializePRState writes PR-STATE.txt with metadata and issue comments.
-func serializePRState(pr *PullRequest, workDir string) error {
+func serializePRState(pr *PullRequest, fsys fs.FS) error {
 	var buf strings.Builder
 
 	// PR metadata header
@@ -346,16 +373,15 @@ func serializePRState(pr *PullRequest, workDir string) error {
 		buf.WriteString("\n")
 	}
 
-	return os.WriteFile(filepath.Join(workDir, prStateFile), []byte(buf.String()), 0644)
+	return fsWriteFile(fsys, prStateFile, []byte(buf.String()))
 }
 
-// Deserialize reads PR data from files in the working directory.
+// Deserialize reads PR data from files in the filesystem.
 func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 	pr := &PullRequest{}
 
 	// Read PR-STATE.txt first to get metadata
-	statePath := filepath.Join(opts.WorkDir, prStateFile)
-	stateContent, err := os.ReadFile(statePath)
+	stateContent, err := fsReadFile(opts.FS, prStateFile)
 	if err != nil {
 		return nil, fmt.Errorf("reading PR state: %w", err)
 	}
@@ -364,15 +390,15 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 		return nil, fmt.Errorf("parsing PR state: %w", err)
 	}
 
-	// Get list of files from git
-	files, err := gitListFiles(opts.WorkDir)
+	// Get list of files
+	files, err := fsListFiles(opts.FS)
 	if err != nil {
 		return nil, fmt.Errorf("listing files: %w", err)
 	}
 
 	// Read comments from each file
 	for _, path := range files {
-		threads, err := deserializeFileComments(opts.WorkDir, path)
+		threads, err := deserializeFileComments(opts.FS, path)
 		if err != nil {
 			return nil, fmt.Errorf("deserializing %s: %w", path, err)
 		}
@@ -382,21 +408,35 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 	return pr, nil
 }
 
-// gitListFiles returns all tracked files in the repo.
-func gitListFiles(workDir string) ([]string, error) {
-	cmd := exec.Command("git", "ls-files")
-	cmd.Dir = workDir
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	var files []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if line != "" {
-			files = append(files, line)
+// fsListFiles returns all files to scan for comments.
+func fsListFiles(fsys fs.FS) ([]string, error) {
+	switch f := fsys.(type) {
+	case fstest.MapFS:
+		var files []string
+		for name := range f {
+			if name != prStateFile {
+				files = append(files, name)
+			}
 		}
+		sort.Strings(files)
+		return files, nil
+	case DirFS:
+		cmd := exec.Command("git", "ls-files")
+		cmd.Dir = string(f)
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, err
+		}
+		var files []string
+		for _, line := range strings.Split(string(out), "\n") {
+			if line != "" {
+				files = append(files, line)
+			}
+		}
+		return files, nil
+	default:
+		return nil, fmt.Errorf("unsupported filesystem type %T for listing", fsys)
 	}
-	return files, nil
 }
 
 // deserializePRState parses PR-STATE.txt into the PullRequest.
@@ -458,9 +498,8 @@ func deserializePRState(pr *PullRequest, content string) error {
 }
 
 // deserializeFileComments parses craft comments from a source file.
-func deserializeFileComments(workDir, path string) ([]ReviewThread, error) {
-	fullPath := filepath.Join(workDir, path)
-	file, err := os.Open(fullPath)
+func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
+	file, err := fsys.Open(path)
 	if err != nil {
 		return nil, err
 	}

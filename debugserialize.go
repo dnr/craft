@@ -59,7 +59,7 @@ func runDebugSerialize(cmd *cobra.Command, args []string) error {
 
 	// Serialize to files
 	opts := SerializeOptions{
-		WorkDir: flagSerializeWorkdir,
+		FS: DirFS(flagSerializeWorkdir),
 	}
 	if err := Serialize(&pr, opts); err != nil {
 		return fmt.Errorf("serializing: %w", err)
@@ -71,7 +71,7 @@ func runDebugSerialize(cmd *cobra.Command, args []string) error {
 
 func runDebugDeserialize(cmd *cobra.Command, args []string) error {
 	opts := SerializeOptions{
-		WorkDir: flagSerializeWorkdir,
+		FS: DirFS(flagSerializeWorkdir),
 	}
 
 	pr, err := Deserialize(opts)
