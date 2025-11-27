@@ -25,10 +25,12 @@ Example:
 }
 
 var (
-	flagSendInput string
-	flagSendOwner string
-	flagSendRepo  string
-	flagDryRun    bool
+	flagSendInput      string
+	flagSendOwner      string
+	flagSendRepo       string
+	flagDryRun         bool
+	flagApprove        bool
+	flagRequestChanges bool
 )
 
 func init() {
@@ -36,6 +38,9 @@ func init() {
 	debugSendCmd.Flags().StringVar(&flagSendOwner, "owner", "", "Repository owner")
 	debugSendCmd.Flags().StringVar(&flagSendRepo, "repo", "", "Repository name")
 	debugSendCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Print what would be sent without sending")
+	debugSendCmd.Flags().BoolVar(&flagApprove, "approve", false, "Submit review as approval")
+	debugSendCmd.Flags().BoolVar(&flagRequestChanges, "request-changes", false, "Submit review requesting changes")
+	debugSendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes")
 
 	debugSendCmd.MarkFlagRequired("input")
 	debugSendCmd.MarkFlagRequired("owner")
@@ -174,8 +179,14 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 	}
 
 	// Submit the review
-	fmt.Print("Submitting review... ")
-	if err := client.submitReview(ctx, reviewID); err != nil {
+	reviewEvent := "COMMENT"
+	if flagApprove {
+		reviewEvent = "APPROVE"
+	} else if flagRequestChanges {
+		reviewEvent = "REQUEST_CHANGES"
+	}
+	fmt.Printf("Submitting review (%s)... ", reviewEvent)
+	if err := client.submitReview(ctx, reviewID, reviewEvent); err != nil {
 		return fmt.Errorf("submitting review: %w", err)
 	}
 	fmt.Println("done")
@@ -335,8 +346,8 @@ func (c *GitHubClient) startReview(ctx context.Context, prNodeID, commitOID stri
 	return mutation.AddPullRequestReview.PullRequestReview.ID, nil
 }
 
-// submitReview submits a pending review as a COMMENT (not approval/rejection).
-func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID) error {
+// submitReview submits a pending review with the given event type (COMMENT, APPROVE, REQUEST_CHANGES).
+func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID, eventType string) error {
 	var mutation struct {
 		SubmitPullRequestReview struct {
 			PullRequestReview struct {
@@ -345,7 +356,7 @@ func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID) e
 		} `graphql:"submitPullRequestReview(input: $input)"`
 	}
 
-	event := githubv4.PullRequestReviewEvent("COMMENT")
+	event := githubv4.PullRequestReviewEvent(eventType)
 
 	input := githubv4.SubmitPullRequestReviewInput{
 		PullRequestReviewID: &reviewID,
