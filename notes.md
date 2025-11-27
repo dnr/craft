@@ -51,8 +51,13 @@
         source code, and **deserialize** our special comments into the local
         model
       - Additionally, the local model can be serialized as JSON for debugging and testing
-    - Local model details:
-      - TBD (once we know what types and fields we need from graphql, fill this in)
+    - Local model details (see `model.go`):
+      - `PullRequest` - top level, contains metadata + all review data
+      - `ReviewThread` - a thread anchored to a file/line, contains comments
+      - `ReviewComment` - a single comment within a thread
+      - `IssueComment` - general PR comment (not attached to code)
+      - `Review` - a formal review submission (PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED)
+      - Comments have `IsNew` and `IsModified` flags for tracking local changes
   - **Comment format**:
     - All craft data is embedded in code comments
     - Use only line comments to keep things simple for now
@@ -64,7 +69,11 @@
     - As in the GitHub UI, review comments appear right _below_ the line they apply to
     - See "Comment Header Format" below for the header format
   - **Authentication**:
-    - Read from `~/.config/gh/hosts.yml` if available, fallback to `GITHUB_TOKEN`
+    - First check `GITHUB_TOKEN` env var
+    - Otherwise read `~/.config/gh/hosts.yml` to get username, then use
+      `github.com/zalando/go-keyring` to read token from system keyring
+      (service=`gh:github.com`, user=username from hosts.yml)
+    - Older gh versions stored `oauth_token` directly in hosts.yml (still supported)
   - **Configuration**:
     - Use git config `craft.remoteName` to specify remote (defaults to "origin")
     - Get the GH repo from the git remote config
@@ -76,8 +85,29 @@
     - specifically see:
       - src/view/reviewCommentController.ts around line 722
       - src/github/pullRequestModel.ts around lines 689, 722, 785
+      - src/github/queriesShared.gql - all the GraphQL queries and mutations
     - use this in addition to the graphql api reference to see how actual
       working code uses it
+
+- **GraphQL API notes** (see `github.go`, `debugsend.go`):
+  - **Fetching PR data**:
+    - Single query gets PR metadata + first page of reviewThreads, comments, reviews
+    - All connections use cursor-based pagination (`first: 100, after: $cursor`)
+    - Must paginate: reviewThreads, issueComments, reviews, and comments within each thread
+    - For nested pagination (comments in thread), use `node(id: $threadId)` query
+    - No `since` filter on reviewThreads/comments - must fetch all and diff locally
+    - `DatabaseID` fields can exceed int32, use `int64` in Go
+  - **Creating comments** (mutations):
+    - All comments must be part of a review (pending or submitted)
+    - Flow: `addPullRequestReview` → add comments → `submitPullRequestReview`
+    - `addPullRequestReviewThread`: creates new thread, takes `pullRequestReviewId`
+    - `addPullRequestReviewComment`: replies to existing comment, requires `pullRequestReviewId` and `inReplyTo` (node ID, not database ID)
+    - `submitPullRequestReview`: takes `event` = COMMENT, APPROVE, or REQUEST_CHANGES
+    - Check for existing pending review before creating new one (user can only have one)
+  - **Gotchas**:
+    - Review comments must be within 3 lines of the diff (GitHub restriction)
+    - `githubv4` input structs use pointers for optional fields
+    - `githubv4.ID` is an interface, assign with `githubv4.ID(stringValue)`
 
 - **Comment Header Format**:
   - Light structured format with key/value fields
