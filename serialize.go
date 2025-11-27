@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -323,24 +324,9 @@ func serializePRState(pr *PullRequest, workDir string) error {
 		"pr",
 		fmt.Sprintf("number %d", pr.Number),
 		"id " + formatNodeID(pr.ID),
-		"head " + pr.HeadRefOID[:12], // Short hash
+		"head " + pr.HeadRefOID,
 	}
 	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + " " + headerStart + "\n")
-	buf.WriteString("\n")
-
-	// Files with comments (for deserialization)
-	files := make(map[string]bool)
-	for _, thread := range pr.ReviewThreads {
-		files[thread.Path] = true
-	}
-	if len(files) > 0 {
-		var fileList []string
-		for f := range files {
-			fileList = append(fileList, f)
-		}
-		sort.Strings(fileList)
-		buf.WriteString("files: " + strings.Join(fileList, ", ") + "\n")
-	}
 	buf.WriteString("\n")
 
 	// Issue comments
@@ -367,16 +353,21 @@ func serializePRState(pr *PullRequest, workDir string) error {
 func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 	pr := &PullRequest{}
 
-	// Read PR-STATE.txt first to get metadata and file list
+	// Read PR-STATE.txt first to get metadata
 	statePath := filepath.Join(opts.WorkDir, prStateFile)
 	stateContent, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading PR state: %w", err)
 	}
 
-	files, err := deserializePRState(pr, string(stateContent))
-	if err != nil {
+	if err := deserializePRState(pr, string(stateContent)); err != nil {
 		return nil, fmt.Errorf("parsing PR state: %w", err)
+	}
+
+	// Get list of files from git
+	files, err := gitListFiles(opts.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("listing files: %w", err)
 	}
 
 	// Read comments from each file
@@ -391,10 +382,26 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 	return pr, nil
 }
 
-// deserializePRState parses PR-STATE.txt and returns the list of files with comments.
-func deserializePRState(pr *PullRequest, content string) ([]string, error) {
-	lines := strings.Split(content, "\n")
+// gitListFiles returns all tracked files in the repo.
+func gitListFiles(workDir string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files")
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
 	var files []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// deserializePRState parses PR-STATE.txt into the PullRequest.
+func deserializePRState(pr *PullRequest, content string) error {
+	lines := strings.Split(content, "\n")
 	var currentComment *IssueComment
 	var bodyLines []string
 
@@ -440,16 +447,6 @@ func deserializePRState(pr *PullRequest, content string) ([]string, error) {
 			continue
 		}
 
-		// Check for files list
-		if strings.HasPrefix(trimmed, "files:") {
-			fileStr := strings.TrimPrefix(trimmed, "files:")
-			fileStr = strings.TrimSpace(fileStr)
-			if fileStr != "" {
-				files = strings.Split(fileStr, ", ")
-			}
-			continue
-		}
-
 		// Body line for current comment
 		if currentComment != nil {
 			bodyLines = append(bodyLines, line)
@@ -457,7 +454,7 @@ func deserializePRState(pr *PullRequest, content string) ([]string, error) {
 	}
 
 	flushComment()
-	return files, nil
+	return nil
 }
 
 // deserializeFileComments parses craft comments from a source file.
