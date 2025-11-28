@@ -232,8 +232,8 @@ import "fmt"
 
 func main() {
 	fmt.Println("hello")
-// ` + /* break up string so we can use craft in this repo */ `❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6IymTJ ─────
-// ` + `❯ Nice print statement!
+	// ` + /* break up string so we can use craft in this repo */ `❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6IymTJ ─────
+	// ` + `❯ Nice print statement!
 	fmt.Println("world")
 }
 `
@@ -388,7 +388,7 @@ func TestMultilineCommentBody(t *testing.T) {
 					{
 						ID:        "PRRC_1",
 						Author:    Actor{Login: "alice"},
-						Body:      "Line one\nLine two\nLine three",
+						Body:      "Line one\n\nLine two\n\nLine three", // Paragraph breaks preserve lines
 						CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 					},
 				},
@@ -410,7 +410,7 @@ func TestMultilineCommentBody(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, pr2.ReviewThreads, 1)
-	assert.Equal(t, "Line one\nLine two\nLine three", pr2.ReviewThreads[0].Comments[0].Body)
+	assert.Equal(t, "Line one\n\nLine two\n\nLine three", pr2.ReviewThreads[0].Comments[0].Body)
 }
 
 func TestPreservesTrailingNewline(t *testing.T) {

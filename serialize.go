@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing/fstest"
 	"time"
+
+	"rsc.io/markdown"
 )
 
 // DirFS wraps a directory path and implements fs.FS.
@@ -28,7 +30,46 @@ const (
 	headerStart    = "─────"
 	headerFieldSep = " ─ "
 	prStateFile    = "PR-STATE.txt"
+	defaultWrap    = 80 // Default wrap width for comment text
 )
+
+// getIndent returns the leading whitespace of a line.
+func getIndent(line string) string {
+	for i, c := range line {
+		if c != ' ' && c != '\t' {
+			return line[:i]
+		}
+	}
+	return line // all whitespace
+}
+
+// wrapCommentBody wraps a comment body to fit within the given width,
+// accounting for the prefix that will be added to each line.
+func wrapCommentBody(body string, prefixLen int) string {
+	width := defaultWrap - prefixLen
+	if width < 20 {
+		width = 20 // minimum reasonable width
+	}
+
+	p := markdown.Parser{}
+	doc := p.Parse(body)
+	wrapped := Wrap(doc, width)
+	result := markdown.Format(wrapped)
+
+	// Trim trailing newline that Format adds
+	return strings.TrimSuffix(result, "\n")
+}
+
+// unwrapCommentBody joins soft-wrapped lines in a comment body.
+func unwrapCommentBody(body string) string {
+	p := markdown.Parser{}
+	doc := p.Parse(body)
+	unwrapped := Unwrap(doc)
+	result := markdown.Format(unwrapped)
+
+	// Trim trailing newline that Format adds
+	return strings.TrimSuffix(result, "\n")
+}
 
 // commentStyle defines how comments work for a language.
 type commentStyle struct {
@@ -301,6 +342,16 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 			return lineThreads[i].Comments[0].CreatedAt.Before(lineThreads[j].Comments[0].CreatedAt)
 		})
 
+		// Get indentation from the target line
+		var indent string
+		if line >= 1 && line <= len(lines) {
+			indent = getIndent(lines[line-1])
+		}
+
+		// Calculate prefix length for wrapping (indent + "// ❯ ")
+		fullPrefix := indent + style.linePrefix + " " + craftPrefix + " "
+		prefixLen := len(fullPrefix)
+
 		var commentLines []string
 		for threadIdx, thread := range lineThreads {
 			// Add thread marker if this is not the first thread on this line
@@ -324,12 +375,12 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 					header.Range = *thread.StartLine - thread.Line // negative
 				}
 
-				commentLines = append(commentLines, formatCraftLine(style.linePrefix, formatHeader(header)))
+				commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, formatHeader(header)))
 
-				// Add body lines
-				bodyLines := strings.Split(comment.Body, "\n")
-				for _, bodyLine := range bodyLines {
-					commentLines = append(commentLines, formatCraftLine(style.linePrefix, bodyLine))
+				// Wrap and add body lines
+				wrappedBody := wrapCommentBody(comment.Body, prefixLen)
+				for _, bodyLine := range strings.Split(wrappedBody, "\n") {
+					commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, bodyLine))
 				}
 			}
 		}
@@ -373,8 +424,9 @@ func serializePRState(pr *PullRequest, fsys fs.FS) error {
 		}
 		buf.WriteString(formatHeader(header) + "\n")
 
-		bodyLines := strings.Split(comment.Body, "\n")
-		for _, line := range bodyLines {
+		// Wrap body (no prefix for PR-STATE.txt)
+		wrappedBody := wrapCommentBody(comment.Body, 0)
+		for _, line := range strings.Split(wrappedBody, "\n") {
 			buf.WriteString(line + "\n")
 		}
 		buf.WriteString("\n")
@@ -454,7 +506,9 @@ func deserializePRState(pr *PullRequest, content string) error {
 
 	flushComment := func() {
 		if currentComment != nil {
-			currentComment.Body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
+			body := strings.TrimSpace(strings.Join(bodyLines, "\n"))
+			// Unwrap soft-wrapped lines to restore original markdown
+			currentComment.Body = unwrapCommentBody(body)
 			pr.IssueComments = append(pr.IssueComments, *currentComment)
 			currentComment = nil
 			bodyLines = nil
@@ -523,7 +577,9 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 
 	flushComment := func() {
 		if currentComment != nil {
-			currentComment.Body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
+			body := strings.TrimSpace(strings.Join(bodyLines, "\n"))
+			// Unwrap soft-wrapped lines to restore original markdown
+			currentComment.Body = unwrapCommentBody(body)
 			if currentThread != nil {
 				currentThread.Comments = append(currentThread.Comments, *currentComment)
 			}
