@@ -21,4 +21,6 @@ require (
 	github.com/shurcooL/graphql v0.0.0-20230722043721-ed46e5a46466 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/text v0.3.7 // indirect
+	rsc.io/markdown v0.0.0-20241212154241-6bf72452917f // indirect
 )
