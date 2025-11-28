@@ -63,6 +63,12 @@ function! craft#IsChainEnd(lnum)
   return l:end
 endfunction
 
+" Get the indentation (leading whitespace) of a line
+function! craft#GetIndent(lnum)
+  let l:line = getline(a:lnum)
+  return matchstr(l:line, '^\s*')
+endfunction
+
 " Main function: reply if in chain, otherwise new comment
 function! craft#Comment() range
   let l:prefix = craft#Prefix()
@@ -71,19 +77,22 @@ function! craft#Comment() range
   if craft#IsCraftLine(line('.'))
     " Reply: go to end of chain and add new comment
     let l:insert_after = craft#IsChainEnd(line('.'))
-    let l:header = l:prefix . ' ❯ ───── new ─────'
+    let l:indent = craft#GetIndent(line('.'))
+    let l:header = l:indent . l:prefix . ' ❯ ───── new ─────'
   elseif a:firstline != a:lastline
-    " Visual range: add range comment
+    " Visual range: add range comment after last line of selection
     let l:insert_after = a:lastline
+    let l:indent = craft#GetIndent(a:lastline)
     let l:range_size = a:firstline - a:lastline
-    let l:header = l:prefix . ' ❯ ───── new ─ range ' . l:range_size . ' ─────'
+    let l:header = l:indent . l:prefix . ' ❯ ───── new ─ range ' . l:range_size . ' ─────'
   else
     " New comment on current line
     let l:insert_after = line('.')
-    let l:header = l:prefix . ' ❯ ───── new ─────'
+    let l:indent = craft#GetIndent(line('.'))
+    let l:header = l:indent . l:prefix . ' ❯ ───── new ─────'
   endif
 
-  let l:body = l:prefix . ' ❯ '
+  let l:body = l:indent . l:prefix . ' ❯ '
   call append(l:insert_after, [l:header, l:body])
   call cursor(l:insert_after + 2, len(l:body) + 1)
   call craft#SetupComments()
