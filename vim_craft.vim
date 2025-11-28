@@ -16,7 +16,42 @@ endfunction
 
 " Check if a line is a craft comment
 function! craft#IsCraftLine(lnum)
-  return getline(a:lnum) =~# ' ❯ '
+  return getline(a:lnum) =~# '❯'
+endfunction
+
+" Set up buffer-local comments setting for craft line wrapping.
+" This makes vim's formatoptions 'c' continue craft comments properly.
+function! craft#SetupComments()
+  " Check if already set up (idempotent)
+  if &l:comments =~# '❯'
+    return
+  endif
+
+  " Parse existing comments setting
+  let l:parts = split(&comments, ',')
+  let l:new_parts = []
+
+  for l:part in l:parts
+    let l:colon = stridx(l:part, ':')
+    if l:colon < 0
+      continue
+    endif
+    let l:flags = l:colon > 0 ? l:part[:l:colon-1] : ''
+    let l:chars = l:part[l:colon+1:]
+
+    " Skip entries with f, s, m, or e flags (middle/end markers)
+    if l:flags =~# '[fsme]'
+      continue
+    endif
+
+    " Create craft version: original chars + ' ❯'
+    call add(l:new_parts, l:flags . ':' . l:chars . ' ❯')
+  endfor
+
+  " Prepend to comments (buffer-local)
+  if len(l:new_parts) > 0
+    let &l:comments = join(l:new_parts, ',') . ',' . &comments
+  endif
 endfunction
 
 " Find the end of a craft comment chain (last consecutive craft line)
@@ -51,6 +86,7 @@ function! craft#Comment() range
   let l:body = l:prefix . ' ❯ '
   call append(l:insert_after, [l:header, l:body])
   call cursor(l:insert_after + 2, len(l:body) + 1)
+  call craft#SetupComments()
   startinsert!
 endfunction
 
