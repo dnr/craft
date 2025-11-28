@@ -294,6 +294,29 @@ func (c *GitHubClient) fetchAllReviewThreads(ctx context.Context, owner, repo st
 	return result, nil
 }
 
+// FetchPRHead fetches just the current head OID of a PR (lightweight check).
+func (c *GitHubClient) FetchPRHead(ctx context.Context, owner, repo string, number int) (string, error) {
+	var query struct {
+		Repository struct {
+			PullRequest struct {
+				HeadRefOID githubv4.GitObjectID `graphql:"headRefOid"`
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	vars := map[string]interface{}{
+		"owner":  githubv4.String(owner),
+		"name":   githubv4.String(repo),
+		"number": githubv4.Int(number),
+	}
+
+	if err := c.client.Query(ctx, &query, vars); err != nil {
+		return "", fmt.Errorf("fetching PR head: %w", err)
+	}
+
+	return string(query.Repository.PullRequest.HeadRefOID), nil
+}
+
 // fetchAllIssueComments paginates through remaining issue comments
 func (c *GitHubClient) fetchAllIssueComments(ctx context.Context, owner, repo string, number int, cursor string) ([]gqlIssueComment, error) {
 	var result []gqlIssueComment

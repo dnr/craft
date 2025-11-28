@@ -119,6 +119,24 @@ func runSend(cmd *cobra.Command, args []string) error {
 
 	ctx := cmd.Context()
 
+	// Check if PR head has changed
+	fmt.Print("Checking PR status... ")
+	currentHead, err := client.FetchPRHead(ctx, owner, repo, prNumber)
+	if err != nil {
+		return fmt.Errorf("checking PR head: %w", err)
+	}
+	if currentHead != pr.HeadRefOID {
+		fmt.Println("changed!")
+		fmt.Printf("\nPR has been updated (local: %s, remote: %s)\n", pr.HeadRefOID[:12], currentHead[:12])
+		fmt.Println("\nTo update your local state while preserving your comments:")
+		fmt.Println("  1. Commit your changes:  git add -A && git commit -m 'my comments'")
+		fmt.Println("  2. Fetch new PR head:    git fetch origin refs/pull/" + fmt.Sprint(prNumber) + "/head")
+		fmt.Println("  3. Merge:                git merge FETCH_HEAD")
+		fmt.Println("  4. Resolve any conflicts, then run 'craft send' again")
+		return fmt.Errorf("PR head has changed; merge required")
+	}
+	fmt.Println("ok")
+
 	// Send the review
 	if err := review.Send(ctx, client, pr.ID, pr.HeadRefOID); err != nil {
 		return err
