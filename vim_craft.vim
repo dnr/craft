@@ -1,8 +1,11 @@
 " Craft code review vim integration
-" Add to your .vimrc:  source /path/to/craft/vim_craft.vim
+" Copy/link this file to your .vim/autoload/craft.vim
+" Add these to .vimrc:
+"nnoremap <leader>C :call craft#Comment()<CR>
+"vnoremap <leader>C :call craft#Comment()<CR>
 
 " Extract comment prefix from &commentstring (e.g., '// %s' -> '//')
-function! CraftPrefix()
+function! craft#Prefix()
   let l:cs = &commentstring
   let l:idx = stridx(l:cs, '%s')
   if l:idx > 0
@@ -12,27 +15,27 @@ function! CraftPrefix()
 endfunction
 
 " Check if a line is a craft comment
-function! CraftIsCraftLine(lnum)
+function! craft#IsCraftLine(lnum)
   return getline(a:lnum) =~# ' ❯ '
 endfunction
 
 " Find the end of a craft comment chain (last consecutive craft line)
-function! CraftChainEnd(lnum)
+function! craft#IsChainEnd(lnum)
   let l:end = a:lnum
-  while CraftIsCraftLine(l:end + 1)
+  while craft#IsCraftLine(l:end + 1)
     let l:end += 1
   endwhile
   return l:end
 endfunction
 
 " Main function: reply if in chain, otherwise new comment
-function! CraftComment() range
-  let l:prefix = CraftPrefix()
+function! craft#Comment() range
+  let l:prefix = craft#Prefix()
 
   " Check if we're in a craft comment chain
-  if CraftIsCraftLine(line('.'))
+  if craft#IsCraftLine(line('.'))
     " Reply: go to end of chain and add new comment
-    let l:insert_after = CraftChainEnd(line('.'))
+    let l:insert_after = craft#IsChainEnd(line('.'))
     let l:header = l:prefix . ' ❯ ───── new ─────'
   elseif a:firstline != a:lastline
     " Visual range: add range comment
@@ -51,5 +54,3 @@ function! CraftComment() range
   startinsert!
 endfunction
 
-nnoremap <leader>cc :call CraftComment()<CR>
-vnoremap <leader>cc :call CraftComment()<CR>
