@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/shurcooL/githubv4"
 	"github.com/spf13/cobra"
@@ -16,8 +15,7 @@ var debugSendCmd = &cobra.Command{
 	Short: "Send new comments from a PR JSON file to GitHub",
 	Long: `Reads a PR JSON file and sends any comments marked as new (isNew: true) to GitHub.
 
-This creates new review threads and replies as needed. Comments are sent as
-single comments (immediately submitted, not as a pending review).
+This creates new review threads and replies as needed.
 
 Example:
   craft debugsend --input pr-modified.json --owner myorg --repo myrepo`,
@@ -25,21 +23,21 @@ Example:
 }
 
 var (
-	flagSendInput      string
-	flagSendOwner      string
-	flagSendRepo       string
-	flagDryRun         bool
-	flagApprove        bool
-	flagRequestChanges bool
+	flagDebugSendInput          string
+	flagDebugSendOwner          string
+	flagDebugSendRepo           string
+	flagDebugSendDryRun         bool
+	flagDebugSendApprove        bool
+	flagDebugSendRequestChanges bool
 )
 
 func init() {
-	debugSendCmd.Flags().StringVar(&flagSendInput, "input", "", "Input JSON file with new comments")
-	debugSendCmd.Flags().StringVar(&flagSendOwner, "owner", "", "Repository owner")
-	debugSendCmd.Flags().StringVar(&flagSendRepo, "repo", "", "Repository name")
-	debugSendCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Print what would be sent without sending")
-	debugSendCmd.Flags().BoolVar(&flagApprove, "approve", false, "Submit review as approval")
-	debugSendCmd.Flags().BoolVar(&flagRequestChanges, "request-changes", false, "Submit review requesting changes")
+	debugSendCmd.Flags().StringVar(&flagDebugSendInput, "input", "", "Input JSON file with new comments")
+	debugSendCmd.Flags().StringVar(&flagDebugSendOwner, "owner", "", "Repository owner")
+	debugSendCmd.Flags().StringVar(&flagDebugSendRepo, "repo", "", "Repository name")
+	debugSendCmd.Flags().BoolVar(&flagDebugSendDryRun, "dry-run", false, "Print what would be sent without sending")
+	debugSendCmd.Flags().BoolVar(&flagDebugSendApprove, "approve", false, "Submit review as approval")
+	debugSendCmd.Flags().BoolVar(&flagDebugSendRequestChanges, "request-changes", false, "Submit review requesting changes")
 	debugSendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes")
 
 	debugSendCmd.MarkFlagRequired("input")
@@ -49,7 +47,7 @@ func init() {
 
 func runDebugSend(cmd *cobra.Command, args []string) error {
 	// Load input JSON
-	data, err := os.ReadFile(flagSendInput)
+	data, err := os.ReadFile(flagDebugSendInput)
 	if err != nil {
 		return fmt.Errorf("reading input file: %w", err)
 	}
@@ -59,85 +57,28 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parsing input JSON: %w", err)
 	}
 
-	// Build lookup map: databaseId -> node ID for existing comments
-	commentNodeIDs := make(map[int64]string)
-	for _, thread := range pr.ReviewThreads {
-		for _, c := range thread.Comments {
-			if c.ID != "" && c.DatabaseID != 0 {
-				commentNodeIDs[c.DatabaseID] = c.ID
-			}
-		}
+	// Collect new comments using shared code
+	review, err := CollectNewComments(&pr)
+	if err != nil {
+		return err
 	}
 
-	// Find all new comments to send
-	var newThreads []newThreadRequest
-	var replies []replyRequest
-
-	for _, thread := range pr.ReviewThreads {
-		if thread.ID == "" {
-			// New thread - the first comment should be new
-			if len(thread.Comments) == 0 {
-				continue
-			}
-			c := thread.Comments[0]
-			if !c.IsNew {
-				continue
-			}
-			newThreads = append(newThreads, newThreadRequest{
-				path:    thread.Path,
-				line:    thread.Line,
-				side:    thread.DiffSide,
-				body:    c.Body,
-				subject: thread.SubjectType,
-			})
-		} else {
-			// Existing thread - look for new replies
-			for _, c := range thread.Comments {
-				if !c.IsNew {
-					continue
-				}
-				// Find the comment to reply to
-				var replyToNodeID string
-				if c.ReplyToID != nil {
-					dbID, err := strconv.ParseInt(*c.ReplyToID, 10, 64)
-					if err == nil {
-						replyToNodeID = commentNodeIDs[dbID]
-					}
-				}
-				if replyToNodeID == "" {
-					// Default to first comment in thread
-					if len(thread.Comments) > 0 && thread.Comments[0].ID != "" {
-						replyToNodeID = thread.Comments[0].ID
-					}
-				}
-				if replyToNodeID == "" {
-					return fmt.Errorf("cannot find comment to reply to in thread %s:%d", thread.Path, thread.Line)
-				}
-				replies = append(replies, replyRequest{
-					threadPath:    thread.Path,
-					threadLine:    thread.Line,
-					body:          c.Body,
-					replyToNodeID: replyToNodeID,
-				})
-			}
-		}
-	}
-
-	if len(newThreads) == 0 && len(replies) == 0 {
+	if review.IsEmpty() {
 		fmt.Println("No new comments to send.")
 		return nil
 	}
 
-	fmt.Printf("Found %d new thread(s) and %d reply/replies to send.\n", len(newThreads), len(replies))
+	// Set review event
+	if flagDebugSendApprove {
+		review.ReviewEvent = "APPROVE"
+	} else if flagDebugSendRequestChanges {
+		review.ReviewEvent = "REQUEST_CHANGES"
+	}
 
-	if flagDryRun {
-		fmt.Println("\n=== DRY RUN - would send as single review: ===")
-		for _, t := range newThreads {
-			fmt.Printf("\nNew thread on %s:%d (%s side):\n  %s\n", t.path, t.line, t.side, t.body)
-		}
-		for _, r := range replies {
-			fmt.Printf("\nReply in thread %s:%d (to %s):\n  %s\n", r.threadPath, r.threadLine, r.replyToNodeID, r.body)
-		}
+	fmt.Printf("Found %s\n", review.Summary())
+
+	if flagDebugSendDryRun {
+		review.PrintDryRun()
 		return nil
 	}
 
@@ -148,66 +89,13 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 	}
 	client := NewGitHubClient(token)
 
-	ctx := cmd.Context()
-
-	// Get or create a single pending review for all comments
-	fmt.Print("Getting/creating pending review... ")
-	reviewID, err := client.getOrCreatePendingReview(ctx, pr.ID, pr.HeadRefOID)
-	if err != nil {
-		return fmt.Errorf("getting/creating review: %w", err)
+	// Send the review using shared code
+	if err := review.Send(cmd.Context(), client, pr.ID, pr.HeadRefOID); err != nil {
+		return err
 	}
-	fmt.Println("done")
-
-	// Add all new threads to the review
-	for _, t := range newThreads {
-		fmt.Printf("Adding thread on %s:%d... ", t.path, t.line)
-		threadID, err := client.addReviewThread(ctx, pr.ID, reviewID, t.path, t.line, t.side, t.subject, t.body)
-		if err != nil {
-			return fmt.Errorf("adding thread: %w", err)
-		}
-		fmt.Printf("done (id: %s)\n", threadID)
-	}
-
-	// Add all replies to the review
-	for _, r := range replies {
-		fmt.Printf("Adding reply in thread %s:%d... ", r.threadPath, r.threadLine)
-		commentID, err := client.addReviewComment(ctx, reviewID, r.replyToNodeID, r.body)
-		if err != nil {
-			return fmt.Errorf("adding reply: %w", err)
-		}
-		fmt.Printf("done (id: %s)\n", commentID)
-	}
-
-	// Submit the review
-	reviewEvent := "COMMENT"
-	if flagApprove {
-		reviewEvent = "APPROVE"
-	} else if flagRequestChanges {
-		reviewEvent = "REQUEST_CHANGES"
-	}
-	fmt.Printf("Submitting review (%s)... ", reviewEvent)
-	if err := client.submitReview(ctx, reviewID, reviewEvent); err != nil {
-		return fmt.Errorf("submitting review: %w", err)
-	}
-	fmt.Println("done")
 
 	fmt.Println("\nAll comments sent successfully!")
 	return nil
-}
-
-type newThreadRequest struct {
-	path    string
-	line    int
-	side    DiffSide
-	subject SubjectType
-	body    string
-}
-
-type replyRequest struct {
-	threadPath    string
-	threadLine    int
-	body          string
-	replyToNodeID string
 }
 
 // addReviewThread adds a new thread to a pending review.
@@ -347,7 +235,8 @@ func (c *GitHubClient) startReview(ctx context.Context, prNodeID, commitOID stri
 }
 
 // submitReview submits a pending review with the given event type (COMMENT, APPROVE, REQUEST_CHANGES).
-func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID, eventType string) error {
+// The body is optional and becomes the top-level review comment.
+func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID, eventType, body string) error {
 	var mutation struct {
 		SubmitPullRequestReview struct {
 			PullRequestReview struct {
@@ -361,6 +250,11 @@ func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID, e
 	input := githubv4.SubmitPullRequestReviewInput{
 		PullRequestReviewID: &reviewID,
 		Event:               event,
+	}
+
+	if body != "" {
+		bodyVal := githubv4.String(body)
+		input.Body = &bodyVal
 	}
 
 	vars := map[string]interface{}{

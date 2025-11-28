@@ -71,74 +71,28 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("PR-STATE.txt missing PR ID; run 'craft get' first")
 	}
 
-	// Find new comments to send
-	var newThreads []newThreadInfo
-	var replies []replyInfo
-
-	for _, thread := range pr.ReviewThreads {
-		// Check if this is a new thread (no ID)
-		if thread.ID == "" {
-			if len(thread.Comments) == 0 {
-				continue
-			}
-			c := thread.Comments[0]
-			if !c.IsNew {
-				continue
-			}
-			newThreads = append(newThreads, newThreadInfo{
-				path:    thread.Path,
-				line:    thread.Line,
-				side:    thread.DiffSide,
-				subject: thread.SubjectType,
-				body:    c.Body,
-			})
-		} else {
-			// Existing thread - look for new replies
-			for _, c := range thread.Comments {
-				if !c.IsNew {
-					continue
-				}
-				// Reply to first comment in thread
-				if len(thread.Comments) == 0 || thread.Comments[0].ID == "" {
-					return fmt.Errorf("cannot find comment to reply to in thread %s:%d", thread.Path, thread.Line)
-				}
-				replies = append(replies, replyInfo{
-					threadPath:    thread.Path,
-					threadLine:    thread.Line,
-					body:          c.Body,
-					replyToNodeID: thread.Comments[0].ID,
-				})
-			}
-		}
+	// Collect new comments
+	review, err := CollectNewComments(pr)
+	if err != nil {
+		return err
 	}
 
-	// Check for new issue comments
-	var newIssueComments []string
-	for _, c := range pr.IssueComments {
-		if c.IsNew {
-			newIssueComments = append(newIssueComments, c.Body)
-		}
-	}
-
-	if len(newThreads) == 0 && len(replies) == 0 && len(newIssueComments) == 0 {
+	if review.IsEmpty() {
 		fmt.Println("No new comments to send.")
 		return nil
 	}
 
-	fmt.Printf("Found %d new thread(s), %d reply/replies, %d issue comment(s) to send.\n",
-		len(newThreads), len(replies), len(newIssueComments))
+	// Set review event
+	if flagSendApprove {
+		review.ReviewEvent = "APPROVE"
+	} else if flagSendRequestChanges {
+		review.ReviewEvent = "REQUEST_CHANGES"
+	}
+
+	fmt.Printf("Found %s\n", review.Summary())
 
 	if flagSendDryRun {
-		fmt.Println("\n=== DRY RUN ===")
-		for _, t := range newThreads {
-			fmt.Printf("\nNew thread on %s:%d (%s):\n  %s\n", t.path, t.line, t.side, t.body)
-		}
-		for _, r := range replies {
-			fmt.Printf("\nReply in thread %s:%d:\n  %s\n", r.threadPath, r.threadLine, r.body)
-		}
-		for _, c := range newIssueComments {
-			fmt.Printf("\nNew issue comment:\n  %s\n", c)
-		}
+		review.PrintDryRun()
 		return nil
 	}
 
@@ -165,48 +119,10 @@ func runSend(cmd *cobra.Command, args []string) error {
 
 	ctx := cmd.Context()
 
-	// Get or create pending review
-	fmt.Print("Getting/creating pending review... ")
-	reviewID, err := client.getOrCreatePendingReview(ctx, pr.ID, pr.HeadRefOID)
-	if err != nil {
-		return fmt.Errorf("getting/creating review: %w", err)
+	// Send the review
+	if err := review.Send(ctx, client, pr.ID, pr.HeadRefOID); err != nil {
+		return err
 	}
-	fmt.Println("done")
-
-	// Add new threads
-	for _, t := range newThreads {
-		fmt.Printf("Adding thread on %s:%d... ", t.path, t.line)
-		_, err := client.addReviewThread(ctx, pr.ID, reviewID, t.path, t.line, t.side, t.subject, t.body)
-		if err != nil {
-			return fmt.Errorf("adding thread: %w", err)
-		}
-		fmt.Println("done")
-	}
-
-	// Add replies
-	for _, r := range replies {
-		fmt.Printf("Adding reply in thread %s:%d... ", r.threadPath, r.threadLine)
-		_, err := client.addReviewComment(ctx, reviewID, r.replyToNodeID, r.body)
-		if err != nil {
-			return fmt.Errorf("adding reply: %w", err)
-		}
-		fmt.Println("done")
-	}
-
-	// Submit the review
-	reviewEvent := "COMMENT"
-	if flagSendApprove {
-		reviewEvent = "APPROVE"
-	} else if flagSendRequestChanges {
-		reviewEvent = "REQUEST_CHANGES"
-	}
-	fmt.Printf("Submitting review (%s)... ", reviewEvent)
-	if err := client.submitReview(ctx, reviewID, reviewEvent); err != nil {
-		return fmt.Errorf("submitting review: %w", err)
-	}
-	fmt.Println("done")
-
-	// TODO: Handle issue comments (different API)
 
 	// Re-fetch PR to get updated state with our new comments
 	fmt.Print("Fetching updated PR state... ")
@@ -233,19 +149,4 @@ func runSend(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("\nReview sent successfully!")
 	return nil
-}
-
-type newThreadInfo struct {
-	path    string
-	line    int
-	side    DiffSide
-	subject SubjectType
-	body    string
-}
-
-type replyInfo struct {
-	threadPath    string
-	threadLine    int
-	body          string
-	replyToNodeID string
 }
