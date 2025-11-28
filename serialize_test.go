@@ -232,8 +232,8 @@ import "fmt"
 
 func main() {
 	fmt.Println("hello")
-// ❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6IymTJ ─────
-// ❯ Nice print statement!
+// ` + /* break up string so we can use craft in this repo */ `❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6IymTJ ─────
+// ` + `❯ Nice print statement!
 	fmt.Println("world")
 }
 `
