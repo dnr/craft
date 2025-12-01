@@ -170,10 +170,18 @@ func (j *JJRepo) runNoOutput(args ...string) error {
 	return cmd.Run()
 }
 
+func (j *JJRepo) runGitNoOutput(args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = j.root
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func (j *JJRepo) HasUncommittedChanges() (bool, error) {
 	// In jj, the working copy is always a commit, but we can check if
 	// the current change has any diff from its parent
-	out, err := j.run("diff", "--stat")
+	out, err := j.run("diff", "--name-only")
 	if err != nil {
 		return false, err
 	}
@@ -181,9 +189,8 @@ func (j *JJRepo) HasUncommittedChanges() (bool, error) {
 }
 
 func (j *JJRepo) FetchPRBranch(remote string, prNumber int) error {
-	// Fetch from git remote - jj uses git fetch under the hood
 	refspec := fmt.Sprintf("refs/pull/%d/head", prNumber)
-	return j.runNoOutput("git", "fetch", remote, refspec)
+	return j.runGitNoOutput("fetch", remote, refspec)
 }
 
 func (j *JJRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
@@ -225,8 +232,7 @@ func (j *JJRepo) GetRemoteURL(remote string) (string, error) {
 
 func (j *JJRepo) GetCurrentBranch() (string, error) {
 	// Get bookmarks pointing to current change
-	// This is a simplification - in practice we'd parse jj log output
-	return j.run("log", "-r", "@", "--no-graph", "-T", "bookmarks")
+	return j.run("log", "-r", "heads(bookmarks() & ..@)", "--no-graph", "-T", "bookmarks")
 }
 
 func (j *JJRepo) GetConfigValue(key string) (string, error) {
