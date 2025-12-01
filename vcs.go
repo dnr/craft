@@ -203,9 +203,9 @@ func (j *JJRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
 
 	// Set or move the bookmark to the new change
 	// First try to move existing bookmark, if that fails, create it
-	if err := j.runNoOutput("bookmark", "set", bookmarkName); err != nil {
+	if err := j.runNoOutput("bookmark", "set", "--allow-backwards", "-r", commitOID, bookmarkName); err != nil {
 		// Bookmark might not exist, try create
-		return j.runNoOutput("bookmark", "create", bookmarkName)
+		return j.runNoOutput("bookmark", "create", "-r", commitOID, bookmarkName)
 	}
 	return nil
 }
