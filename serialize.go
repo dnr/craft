@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"testing/fstest"
 	"time"
 
@@ -77,46 +79,46 @@ type commentStyle struct {
 }
 
 var commentStyles = map[string]commentStyle{
-	".go":   {linePrefix: "//"},
-	".js":   {linePrefix: "//"},
-	".ts":   {linePrefix: "//"},
-	".tsx":  {linePrefix: "//"},
-	".jsx":  {linePrefix: "//"},
-	".java": {linePrefix: "//"},
-	".c":    {linePrefix: "//"},
-	".cpp":  {linePrefix: "//"},
-	".cc":   {linePrefix: "//"},
-	".h":    {linePrefix: "//"},
-	".hpp":  {linePrefix: "//"},
-	".rs":   {linePrefix: "//"},
+	".go":    {linePrefix: "//"},
+	".js":    {linePrefix: "//"},
+	".ts":    {linePrefix: "//"},
+	".tsx":   {linePrefix: "//"},
+	".jsx":   {linePrefix: "//"},
+	".java":  {linePrefix: "//"},
+	".c":     {linePrefix: "//"},
+	".cpp":   {linePrefix: "//"},
+	".cc":    {linePrefix: "//"},
+	".h":     {linePrefix: "//"},
+	".hpp":   {linePrefix: "//"},
+	".rs":    {linePrefix: "//"},
 	".swift": {linePrefix: "//"},
-	".kt":   {linePrefix: "//"},
+	".kt":    {linePrefix: "//"},
 	".scala": {linePrefix: "//"},
-	".py":   {linePrefix: "#"},
-	".rb":   {linePrefix: "#"},
-	".sh":   {linePrefix: "#"},
-	".bash": {linePrefix: "#"},
-	".zsh":  {linePrefix: "#"},
-	".pl":   {linePrefix: "#"},
-	".pm":   {linePrefix: "#"},
-	".r":    {linePrefix: "#"},
-	".R":    {linePrefix: "#"},
-	".yaml": {linePrefix: "#"},
-	".yml":  {linePrefix: "#"},
-	".toml": {linePrefix: "#"},
-	".tf":   {linePrefix: "#"},
-	".lua":  {linePrefix: "--"},
-	".hs":   {linePrefix: "--"},
-	".sql":  {linePrefix: "--"},
-	".elm":  {linePrefix: "--"},
-	".erl":  {linePrefix: "%"},
-	".ex":   {linePrefix: "#"},
-	".exs":  {linePrefix: "#"},
-	".clj":  {linePrefix: ";;"},
-	".lisp": {linePrefix: ";;"},
-	".scm":  {linePrefix: ";;"},
-	".vim":  {linePrefix: "\""},
-	".el":   {linePrefix: ";;"},
+	".py":    {linePrefix: "#"},
+	".rb":    {linePrefix: "#"},
+	".sh":    {linePrefix: "#"},
+	".bash":  {linePrefix: "#"},
+	".zsh":   {linePrefix: "#"},
+	".pl":    {linePrefix: "#"},
+	".pm":    {linePrefix: "#"},
+	".r":     {linePrefix: "#"},
+	".R":     {linePrefix: "#"},
+	".yaml":  {linePrefix: "#"},
+	".yml":   {linePrefix: "#"},
+	".toml":  {linePrefix: "#"},
+	".tf":    {linePrefix: "#"},
+	".lua":   {linePrefix: "--"},
+	".hs":    {linePrefix: "--"},
+	".sql":   {linePrefix: "--"},
+	".elm":   {linePrefix: "--"},
+	".erl":   {linePrefix: "%"},
+	".ex":    {linePrefix: "#"},
+	".exs":   {linePrefix: "#"},
+	".clj":   {linePrefix: ";;"},
+	".lisp":  {linePrefix: ";;"},
+	".scm":   {linePrefix: ";;"},
+	".vim":   {linePrefix: "\""},
+	".el":    {linePrefix: ";;"},
 }
 
 func getCommentStyle(path string) commentStyle {
@@ -467,6 +469,10 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 	for _, path := range files {
 		threads, err := deserializeFileComments(opts.FS, path)
 		if err != nil {
+			if errors.Is(err, syscall.EISDIR) {
+				// harmless error caused by submodules
+				continue
+			}
 			return nil, fmt.Errorf("deserializing %s: %w", path, err)
 		}
 		pr.ReviewThreads = append(pr.ReviewThreads, threads...)
