@@ -411,7 +411,15 @@ func serializePRState(pr *PullRequest, fsys fs.FS) error {
 		formatNodeID(pr.ID),
 		"head " + pr.HeadRefOID,
 	}
+	if pr.Author.Login != "" {
+		metaFields = append(metaFields, "by "+pr.Author.Login)
+	}
 	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + " " + headerStart + "\n")
+
+	// PR description body (informational only, ignored on deserialize)
+	if pr.Body != "" {
+		buf.WriteString(wrapCommentBody(pr.Body, 0) + "\n")
+	}
 	buf.WriteString("\n")
 
 	// Issue comments
@@ -527,6 +535,7 @@ func deserializePRState(pr *PullRequest, content string) error {
 				strings.HasPrefix(trimmed, headerStart+" pr"+headerFieldSep) {
 				// Parse PR metadata from header
 				pr.ID = header.NodeID
+				pr.Author.Login = header.Author
 				// Parse additional fields from the raw line
 				if match := regexp.MustCompile(`number (\d+)`).FindStringSubmatch(trimmed); match != nil {
 					fmt.Sscanf(match[1], "%d", &pr.Number)

@@ -413,6 +413,43 @@ func TestMultilineCommentBody(t *testing.T) {
 	assert.Equal(t, "Line one\n\nLine two\n\nLine three", pr2.ReviewThreads[0].Comments[0].Body)
 }
 
+func TestPRStateAuthorAndBody(t *testing.T) {
+	pr := &PullRequest{
+		ID:         "PR_kwDOPgi5ks6k-agY",
+		Number:     42,
+		HeadRefOID: "abc123",
+		Author:     Actor{Login: "alice"},
+		Body:       "This is the PR description.\n\nIt has multiple paragraphs.",
+		IssueComments: []IssueComment{
+			{
+				ID:        "IC_kwDOPgi5ks1234567",
+				Author:    Actor{Login: "bob"},
+				Body:      "LGTM!",
+				CreatedAt: time.Date(2025, 1, 17, 10, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	memfs := fstest.MapFS{}
+	opts := SerializeOptions{FS: memfs}
+	err := Serialize(pr, opts)
+	require.NoError(t, err)
+
+	// Verify PR-STATE.txt contains author and body
+	stateData := string(memfs[prStateFile].Data)
+	assert.Contains(t, stateData, "by alice")
+	assert.Contains(t, stateData, "This is the PR description.")
+
+	// Deserialize and verify author is parsed, body is ignored
+	pr2, err := Deserialize(opts)
+	require.NoError(t, err)
+
+	assert.Equal(t, "alice", pr2.Author.Login)
+	assert.Empty(t, pr2.Body) // Body is not deserialized
+	require.Len(t, pr2.IssueComments, 1)
+	assert.Equal(t, "LGTM!", pr2.IssueComments[0].Body)
+}
+
 func TestPreservesTrailingNewline(t *testing.T) {
 	// File with trailing newline
 	withNewline := "line 1\nline 2\n"
