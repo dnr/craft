@@ -210,7 +210,6 @@ func formatHeader(h Header) string {
 
 // parseHeader parses a header line into a Header struct.
 func parseHeader(line string) (Header, bool) {
-	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, headerStart) || !strings.HasSuffix(line, headerStart) {
 		return Header{}, false
 	}
@@ -533,39 +532,40 @@ func deserializePRState(pr *PullRequest, content string) error {
 		trimmed := strings.TrimSpace(line)
 
 		// Check for header
-		if header, ok := parseHeader(trimmed); ok {
-			flushComment()
-
-			// Check if it's the PR metadata header
-			if strings.Contains(trimmed, headerFieldSep+"pr"+headerFieldSep) ||
-				strings.HasPrefix(trimmed, headerStart+" pr"+headerFieldSep) {
-				// Parse PR metadata from header
-				pr.ID = header.NodeID
-				pr.Author.Login = header.Author
-				// Parse additional fields from the raw line
-				if match := regexp.MustCompile(`number (\d+)`).FindStringSubmatch(trimmed); match != nil {
-					fmt.Sscanf(match[1], "%d", &pr.Number)
-				}
-				if match := regexp.MustCompile(`head ([a-f0-9]+)`).FindStringSubmatch(trimmed); match != nil {
-					pr.HeadRefOID = match[1]
-				}
-				continue
-			}
-
-			// It's a comment header
-			currentComment = &IssueComment{
-				ID:        header.NodeID,
-				Author:    Actor{Login: header.Author},
-				CreatedAt: header.Timestamp,
-				UpdatedAt: header.Timestamp,
-				IsNew:     header.IsNew,
+		header, isHeader := parseHeader(trimmed)
+		if !isHeader {
+			// Body line for current comment
+			if currentComment != nil {
+				bodyLines = append(bodyLines, line)
 			}
 			continue
 		}
 
-		// Body line for current comment
-		if currentComment != nil {
-			bodyLines = append(bodyLines, line)
+		flushComment()
+
+		// Check if it's the PR metadata header
+		if strings.Contains(trimmed, headerFieldSep+"pr"+headerFieldSep) ||
+			strings.HasPrefix(trimmed, headerStart+" pr"+headerFieldSep) {
+			// Parse PR metadata from header
+			pr.ID = header.NodeID
+			pr.Author.Login = header.Author
+			// Parse additional fields from the raw line
+			if match := regexp.MustCompile(`number (\d+)`).FindStringSubmatch(trimmed); match != nil {
+				fmt.Sscanf(match[1], "%d", &pr.Number)
+			}
+			if match := regexp.MustCompile(`head ([a-f0-9]+)`).FindStringSubmatch(trimmed); match != nil {
+				pr.HeadRefOID = match[1]
+			}
+			continue
+		}
+
+		// It's a comment header
+		currentComment = &IssueComment{
+			ID:        header.NodeID,
+			Author:    Actor{Login: header.Author},
+			CreatedAt: header.Timestamp,
+			UpdatedAt: header.Timestamp,
+			IsNew:     header.IsNew,
 		}
 	}
 
@@ -580,22 +580,11 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 		return nil, err
 	}
 
-	// Skip binary files: check for NUL byte in first 4K
-	checkLen := len(content)
-	if checkLen > 4096 {
-		checkLen = 4096
-	}
-	for i := 0; i < checkLen; i++ {
-		if content[i] == 0 {
-			return nil, nil // binary file, skip
-		}
-	}
-
 	style := getCommentStyle(path)
-	craftLinePrefix := style.linePrefix + " " + craftPrefix + " "
+	craftLinePrefix := style.linePrefix + " " + craftPrefix
 
-	// Skip files that don't contain the comment prefix for this file type
-	if !bytes.Contains(content, []byte(style.linePrefix)) {
+	// Skip binary files or files that don't contain the comment prefix for this file type
+	if bytes.IndexByte(content, 0) >= 0 || !bytes.Contains(content, []byte(craftLinePrefix)) {
 		return nil, nil
 	}
 
@@ -629,59 +618,57 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 	lines := strings.Split(string(content), "\n")
 	for lineNum, line := range lines {
 		lineNum++ // 1-based line numbers
+		line = strings.TrimSpace(line)
 
 		// Check if this is a craft line
-		if strings.HasPrefix(strings.TrimSpace(line), style.linePrefix+" "+craftPrefix) {
-			// Extract craft content after the craft prefix
-			craftContent := line
-			if idx := strings.Index(craftContent, craftLinePrefix); idx != -1 {
-				craftContent = craftContent[idx+len(craftLinePrefix):]
-			} else {
-				// Handle case with no space after prefix
-				craftContent = strings.TrimPrefix(strings.TrimSpace(craftContent), style.linePrefix+" "+craftPrefix)
-				craftContent = strings.TrimPrefix(craftContent, " ")
-			}
-
-			// Check for header
-			if header, ok := parseHeader(craftContent); ok {
-				flushComment()
-
-				// Check if we need a new thread
-				if currentThread == nil || header.IsThread {
-					flushThread()
-					currentThread = &ReviewThread{
-						Path:        path,
-						Line:        lastCodeLine,
-						DiffSide:    DiffSideRight, // Default
-						SubjectType: SubjectTypeLine,
-					}
-					if header.IsFile {
-						currentThread.SubjectType = SubjectTypeFile
-					}
-					if header.Range != 0 {
-						startLine := lastCodeLine + header.Range
-						currentThread.StartLine = &startLine
-					}
-				}
-
-				currentComment = &ReviewComment{
-					ID:        header.NodeID,
-					Author:    Actor{Login: header.Author},
-					CreatedAt: header.Timestamp,
-					UpdatedAt: header.Timestamp,
-					IsNew:     header.IsNew,
-				}
-				continue
-			}
-
-			// Body line
-			if currentComment != nil {
-				bodyLines = append(bodyLines, craftContent)
-			}
-		} else {
+		if !strings.HasPrefix(line, craftLinePrefix) {
 			// Non-craft line - this ends any current thread
 			flushThread()
 			lastCodeLine = lineNum
+			continue
+		}
+
+		// Extract craft content after the craft prefix
+		line = strings.TrimPrefix(line, craftLinePrefix)
+		line = strings.TrimSpace(line)
+
+		// Check for header
+		header, isHeader := parseHeader(line)
+		if !isHeader {
+			// Body line
+			if currentComment != nil {
+				bodyLines = append(bodyLines, line)
+			}
+			continue
+		}
+
+		// Header line
+		flushComment()
+
+		// Check if we need a new thread
+		if currentThread == nil || header.IsThread {
+			flushThread()
+			currentThread = &ReviewThread{
+				Path:        path,
+				Line:        lastCodeLine,
+				DiffSide:    DiffSideRight, // Default
+				SubjectType: SubjectTypeLine,
+			}
+			if header.IsFile {
+				currentThread.SubjectType = SubjectTypeFile
+			}
+			if header.Range != 0 {
+				startLine := lastCodeLine + header.Range
+				currentThread.StartLine = &startLine
+			}
+		}
+
+		currentComment = &ReviewComment{
+			ID:        header.NodeID,
+			Author:    Actor{Login: header.Author},
+			CreatedAt: header.Timestamp,
+			UpdatedAt: header.Timestamp,
+			IsNew:     header.IsNew,
 		}
 	}
 

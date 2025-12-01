@@ -77,16 +77,16 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if review.IsEmpty() {
-		fmt.Println("No new comments to send.")
-		return nil
-	}
-
 	// Set review event
 	if flagSendApprove {
 		review.ReviewEvent = "APPROVE"
 	} else if flagSendRequestChanges {
 		review.ReviewEvent = "REQUEST_CHANGES"
+	}
+
+	if review.IsEmpty() && review.ReviewEvent != "APPROVE" {
+		fmt.Println("No new comments to send.")
+		return nil
 	}
 
 	fmt.Printf("Found %s\n", review.Summary())
