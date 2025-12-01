@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -575,14 +575,29 @@ func deserializePRState(pr *PullRequest, content string) error {
 
 // deserializeFileComments parses craft comments from a source file.
 func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
-	file, err := fsys.Open(path)
+	content, err := fsReadFile(fsys, path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+
+	// Skip binary files: check for NUL byte in first 4K
+	checkLen := len(content)
+	if checkLen > 4096 {
+		checkLen = 4096
+	}
+	for i := 0; i < checkLen; i++ {
+		if content[i] == 0 {
+			return nil, nil // binary file, skip
+		}
+	}
 
 	style := getCommentStyle(path)
 	craftLinePrefix := style.linePrefix + " " + craftPrefix + " "
+
+	// Skip files that don't contain the comment prefix for this file type
+	if !bytes.Contains(content, []byte(style.linePrefix)) {
+		return nil, nil
+	}
 
 	var threads []ReviewThread
 	var currentThread *ReviewThread
@@ -611,26 +626,24 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 		currentThread = nil
 	}
 
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
+	lines := strings.Split(string(content), "\n")
+	for lineNum, line := range lines {
+		lineNum++ // 1-based line numbers
 
 		// Check if this is a craft line
 		if strings.HasPrefix(strings.TrimSpace(line), style.linePrefix+" "+craftPrefix) {
-			// Extract content after the craft prefix
-			content := line
-			if idx := strings.Index(content, craftLinePrefix); idx != -1 {
-				content = content[idx+len(craftLinePrefix):]
+			// Extract craft content after the craft prefix
+			craftContent := line
+			if idx := strings.Index(craftContent, craftLinePrefix); idx != -1 {
+				craftContent = craftContent[idx+len(craftLinePrefix):]
 			} else {
 				// Handle case with no space after prefix
-				content = strings.TrimPrefix(strings.TrimSpace(content), style.linePrefix+" "+craftPrefix)
-				content = strings.TrimPrefix(content, " ")
+				craftContent = strings.TrimPrefix(strings.TrimSpace(craftContent), style.linePrefix+" "+craftPrefix)
+				craftContent = strings.TrimPrefix(craftContent, " ")
 			}
 
 			// Check for header
-			if header, ok := parseHeader(content); ok {
+			if header, ok := parseHeader(craftContent); ok {
 				flushComment()
 
 				// Check if we need a new thread
@@ -663,7 +676,7 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 
 			// Body line
 			if currentComment != nil {
-				bodyLines = append(bodyLines, content)
+				bodyLines = append(bodyLines, craftContent)
 			}
 		} else {
 			// Non-craft line - this ends any current thread
@@ -673,10 +686,6 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 	}
 
 	flushThread()
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
 
 	return threads, nil
 }
