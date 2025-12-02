@@ -512,7 +512,7 @@ func TestOutdatedResolvedHeaders(t *testing.T) {
 	}
 }
 
-func TestObsoleteThreadsAtEndOfFile(t *testing.T) {
+func TestOutdatedThreadsAtEndOfFile(t *testing.T) {
 	// Test that threads with out-of-bounds line numbers go to end of file
 	pr := &PullRequest{
 		ID:         "PR_test",
@@ -536,18 +536,18 @@ func TestObsoleteThreadsAtEndOfFile(t *testing.T) {
 				},
 			},
 			{
-				ID:           "PRRT_obsolete",
+				ID:           "PRRT_outdated",
 				Path:         "file.go",
 				DiffSide:     DiffSideRight,
-				Line:         0, // out of bounds - obsolete
+				Line:         0, // out of bounds - outdated
 				OriginalLine: 50,
 				SubjectType:  SubjectTypeLine,
 				IsResolved:   true,
 				Comments: []ReviewComment{
 					{
-						ID:        "PRRC_obsolete",
+						ID:        "PRRC_outdated",
 						Author:    Actor{Login: "bob"},
-						Body:      "Obsolete comment",
+						Body:      "Outdated comment",
 						CreatedAt: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC),
 					},
 				},
@@ -571,9 +571,9 @@ func TestObsoleteThreadsAtEndOfFile(t *testing.T) {
 	// Should have the valid comment after line 2
 	assert.Contains(t, content, "Valid comment on line 2")
 
-	// Should have obsolete section at end
-	assert.Contains(t, content, "=== obsolete threads")
-	assert.Contains(t, content, "Obsolete comment")
+	// Should have outdated section at end
+	assert.Contains(t, content, "━━━━━ outdated comments")
+	assert.Contains(t, content, "Outdated comment")
 	assert.Contains(t, content, "origline 50")
 	assert.Contains(t, content, "resolved")
 
@@ -583,21 +583,21 @@ func TestObsoleteThreadsAtEndOfFile(t *testing.T) {
 
 	require.Len(t, pr2.ReviewThreads, 2)
 
-	// Find the valid and obsolete threads
-	var validThread, obsoleteThread *ReviewThread
+	// Find the valid and outdated comments
+	var validThread, outdatedThread *ReviewThread
 	for i := range pr2.ReviewThreads {
 		if pr2.ReviewThreads[i].Comments[0].Body == "Valid comment on line 2" {
 			validThread = &pr2.ReviewThreads[i]
 		} else {
-			obsoleteThread = &pr2.ReviewThreads[i]
+			outdatedThread = &pr2.ReviewThreads[i]
 		}
 	}
 
 	require.NotNil(t, validThread)
-	require.NotNil(t, obsoleteThread)
+	require.NotNil(t, outdatedThread)
 
 	assert.Equal(t, 2, validThread.Line)
-	assert.Equal(t, "Obsolete comment", obsoleteThread.Comments[0].Body)
+	assert.Equal(t, "Outdated comment", outdatedThread.Comments[0].Body)
 }
 
 func TestLineNumbersIgnoreCraftComments(t *testing.T) {

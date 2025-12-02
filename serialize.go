@@ -132,7 +132,7 @@ func getCommentStyle(path string) commentStyle {
 
 // formatCraftLine formats a line of craft content for a source file.
 func formatCraftLine(linePrefix, content string) string {
-	return fmt.Sprintf("%s %s %s", linePrefix, craftPrefix, content)
+	return linePrefix + " " + craftPrefix + " " + content
 }
 
 // Header represents a parsed comment header.
@@ -146,7 +146,7 @@ type Header struct {
 	IsThread   bool // explicit new thread marker (for multiple threads on same line)
 	IsOutdated bool // code has changed since comment was made
 	IsResolved bool // thread has been resolved
-	OrigLine   int  // original line number (for obsolete threads)
+	OrigLine   int  // original line number (for outdated threads)
 }
 
 // formatNodeID converts a full node ID to the short format for headers.
@@ -326,9 +326,9 @@ func fsWriteFile(fsys fs.FS, name string, data []byte) error {
 
 // serializeFileComments writes review threads as comments into a source file.
 func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) error {
-	// Read original file
+	// Read original file (may not exist for deleted files)
 	content, err := fsReadFile(fsys, path)
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("reading file: %w", err)
 	}
 
@@ -336,19 +336,25 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 
 	// Strip existing craft comments to make serialization idempotent
 	var lines []string
-	for _, line := range strings.Split(string(content), "\n") {
-		if !strings.Contains(line, " "+craftPrefix+" ") {
-			lines = append(lines, line)
+	if content != nil {
+		for _, line := range strings.Split(string(content), "\n") {
+			if !strings.Contains(line, " "+craftPrefix+" ") {
+				lines = append(lines, line)
+			}
 		}
 	}
 
-	// Separate threads into valid (line in bounds) and obsolete (line out of bounds)
-	var validThreads, obsoleteThreads []ReviewThread
+	// Separate threads into valid (line in bounds, RIGHT side) and outdated
+	// LEFT side comments are on deleted/old code, so treat as outdated
+	var validThreads, outdatedThreads []ReviewThread
 	for _, thread := range threads {
-		if thread.Line >= 1 && thread.Line <= len(lines) {
+		if thread.DiffSide == DiffSideLeft {
+			// LEFT side = comment on old/deleted code
+			outdatedThreads = append(outdatedThreads, thread)
+		} else if thread.Line >= 1 && thread.Line <= len(lines) {
 			validThreads = append(validThreads, thread)
 		} else {
-			obsoleteThreads = append(obsoleteThreads, thread)
+			outdatedThreads = append(outdatedThreads, thread)
 		}
 	}
 
@@ -424,17 +430,16 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 		lines = newLines
 	}
 
-	// Append obsolete threads at end of file
-	if len(obsoleteThreads) > 0 {
+	// Append outdated threads at end of file
+	if len(outdatedThreads) > 0 {
 		// Sort by original line number for consistent ordering
-		sort.Slice(obsoleteThreads, func(i, j int) bool {
-			return obsoleteThreads[i].OriginalLine < obsoleteThreads[j].OriginalLine
+		sort.Slice(outdatedThreads, func(i, j int) bool {
+			return outdatedThreads[i].OriginalLine < outdatedThreads[j].OriginalLine
 		})
 
-		lines = append(lines, "")
-		lines = append(lines, formatCraftLine(style.linePrefix, "=== obsolete threads (code has changed) ==="))
+		lines = append(lines, "", formatCraftLine(style.linePrefix, "━━━━━ outdated comments (code has changed) ━━━━━"))
 
-		for threadIdx, thread := range obsoleteThreads {
+		for threadIdx, thread := range outdatedThreads {
 			needsThreadMarker := threadIdx > 0
 
 			for i, comment := range thread.Comments {

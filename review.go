@@ -7,10 +7,10 @@ import (
 
 // ReviewToSend contains all the new comments to send in a review.
 type ReviewToSend struct {
-	NewThreads   []NewThreadInfo
-	Replies      []ReplyInfo
-	Body         string // PR-level comment (at most one)
-	ReviewEvent  string // COMMENT, APPROVE, or REQUEST_CHANGES
+	NewThreads  []NewThreadInfo
+	Replies     []ReplyInfo
+	Body        string // PR-level comment (at most one)
+	ReviewEvent string // COMMENT, APPROVE, or REQUEST_CHANGES
 }
 
 type NewThreadInfo struct {
@@ -98,7 +98,7 @@ func (r *ReviewToSend) Summary() string {
 
 // PrintDryRun prints what would be sent without sending.
 func (r *ReviewToSend) PrintDryRun() {
-	fmt.Println("\n=== DRY RUN ===")
+	fmt.Println("\n━━━━━ DRY RUN ━━━━━")
 	for _, t := range r.NewThreads {
 		fmt.Printf("\nNew thread on %s:%d (%s):\n  %s\n", t.Path, t.Line, t.Side, t.Body)
 	}
