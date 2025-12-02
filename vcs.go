@@ -103,21 +103,7 @@ func (g *GitRepo) FetchPRBranch(remote string, prNumber int) error {
 
 func (g *GitRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
 	branchName := fmt.Sprintf("pr-%d", prNumber)
-
-	// Check if branch exists
-	_, err := g.run("rev-parse", "--verify", branchName)
-	branchExists := err == nil
-
-	if branchExists {
-		// Switch to branch and reset to the commit
-		if err := g.runNoOutput("checkout", branchName); err != nil {
-			return err
-		}
-		return g.runNoOutput("reset", "--hard", commitOID)
-	}
-
-	// Create new branch at the commit and switch to it
-	return g.runNoOutput("checkout", "-b", branchName, commitOID)
+	return g.runNoOutput("switch", "-C", branchName, commitOID)
 }
 
 func (g *GitRepo) Commit(message string) error {
@@ -189,25 +175,29 @@ func (j *JJRepo) HasUncommittedChanges() (bool, error) {
 }
 
 func (j *JJRepo) FetchPRBranch(remote string, prNumber int) error {
-	refspec := fmt.Sprintf("refs/pull/%d/head", prNumber)
-	return j.runGitNoOutput("fetch", remote, refspec)
+	refspec := fmt.Sprintf("refs/pull/%d/head:pr-%d", prNumber, prNumber)
+	err := j.runGitNoOutput("fetch", "--force", remote, refspec)
+	if err != nil {
+		return err
+	}
+	return j.runNoOutput("git", "import")
 }
 
 func (j *JJRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
 	bookmarkName := fmt.Sprintf("pr-%d", prNumber)
 
-	// Create a new change at the commit
-	if err := j.runNoOutput("new", commitOID); err != nil {
-		return err
-	}
-
 	// Set or move the bookmark to the new change
 	// First try to move existing bookmark, if that fails, create it
 	if err := j.runNoOutput("bookmark", "set", "--allow-backwards", "-r", commitOID, bookmarkName); err != nil {
 		// Bookmark might not exist, try create
-		return j.runNoOutput("bookmark", "create", "-r", commitOID, bookmarkName)
+		err = j.runNoOutput("bookmark", "create", "-r", commitOID, bookmarkName)
+		if err != nil {
+			return err
+		}
 	}
-	return nil
+
+	// Create a new change at the commit
+	return j.runNoOutput("new", commitOID)
 }
 
 func (j *JJRepo) Commit(message string) error {
