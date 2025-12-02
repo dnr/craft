@@ -137,13 +137,16 @@ func formatCraftLine(linePrefix, content string) string {
 
 // Header represents a parsed comment header.
 type Header struct {
-	Author    string
-	Timestamp time.Time
-	NodeID    string // Full node ID like "PRRC_kwDOPgi5ks6ZBMOo"
-	IsNew     bool
-	IsFile    bool // file-level comment
-	Range     int  // negative number for range comments (e.g., -12 means 12 lines above)
-	IsThread  bool // explicit new thread marker (for multiple threads on same line)
+	Author     string
+	Timestamp  time.Time
+	NodeID     string // Full node ID like "PRRC_kwDOPgi5ks6ZBMOo"
+	IsNew      bool
+	IsFile     bool // file-level comment
+	Range      int  // negative number for range comments (e.g., -12 means 12 lines above)
+	IsThread   bool // explicit new thread marker (for multiple threads on same line)
+	IsOutdated bool // code has changed since comment was made
+	IsResolved bool // thread has been resolved
+	OrigLine   int  // original line number (for obsolete threads)
 }
 
 // formatNodeID converts a full node ID to the short format for headers.
@@ -201,6 +204,18 @@ func formatHeader(h Header) string {
 		fields = append(fields, "thread")
 	}
 
+	if h.IsOutdated {
+		fields = append(fields, "outdated")
+	}
+
+	if h.IsResolved {
+		fields = append(fields, "resolved")
+	}
+
+	if h.OrigLine != 0 {
+		fields = append(fields, fmt.Sprintf("origline %d", h.OrigLine))
+	}
+
 	if h.NodeID != "" {
 		fields = append(fields, formatNodeID(h.NodeID))
 	}
@@ -239,6 +254,10 @@ func parseHeader(line string) (Header, bool) {
 			h.IsFile = true
 		case field == "thread":
 			h.IsThread = true
+		case field == "outdated":
+			h.IsOutdated = true
+		case field == "resolved":
+			h.IsResolved = true
 		case strings.HasPrefix(field, "by "):
 			h.Author = strings.TrimPrefix(field, "by ")
 		case strings.HasPrefix(field, "at "):
@@ -248,6 +267,8 @@ func parseHeader(line string) (Header, bool) {
 			}
 		case strings.HasPrefix(field, "range "):
 			fmt.Sscanf(field, "range %d", &h.Range)
+		case strings.HasPrefix(field, "origline "):
+			fmt.Sscanf(field, "origline %d", &h.OrigLine)
 		case strings.HasPrefix(field, "prrc ") || strings.HasPrefix(field, "ic ") ||
 			strings.HasPrefix(field, "prrt ") || strings.HasPrefix(field, "pr "):
 			h.NodeID = parseNodeID(field)
@@ -321,17 +342,31 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 		}
 	}
 
-	// Sort threads by line number (descending) so we insert from bottom to top
+	// Separate threads into valid (line in bounds) and obsolete (line out of bounds)
+	var validThreads, obsoleteThreads []ReviewThread
+	for _, thread := range threads {
+		if thread.Line >= 1 && thread.Line <= len(lines) {
+			validThreads = append(validThreads, thread)
+		} else {
+			obsoleteThreads = append(obsoleteThreads, thread)
+		}
+	}
+
+	// Sort valid threads by line number (descending) so we insert from bottom to top
 	// This way line numbers don't shift as we insert
-	sort.Slice(threads, func(i, j int) bool {
-		return threads[i].Line > threads[j].Line
+	sort.Slice(validThreads, func(i, j int) bool {
+		return validThreads[i].Line > validThreads[j].Line
 	})
 
 	// Group threads by line for handling multiple threads on same line
 	threadsByLine := make(map[int][]ReviewThread)
-	for _, thread := range threads {
+	for _, thread := range validThreads {
 		threadsByLine[thread.Line] = append(threadsByLine[thread.Line], thread)
 	}
+
+	// Calculate prefix length for wrapping (no indent for simplicity)
+	fullPrefix := style.linePrefix + " " + craftPrefix + " "
+	prefixLen := len(fullPrefix)
 
 	// Process each line's threads
 	for line, lineThreads := range threadsByLine {
@@ -344,14 +379,7 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 		})
 
 		// Get indentation from the target line
-		var indent string
-		if line >= 1 && line <= len(lines) {
-			indent = getIndent(lines[line-1])
-		}
-
-		// Calculate prefix length for wrapping (indent + "// ❯ ")
-		fullPrefix := indent + style.linePrefix + " " + craftPrefix + " "
-		prefixLen := len(fullPrefix)
+		indent := getIndent(lines[line-1])
 
 		var commentLines []string
 		for threadIdx, thread := range lineThreads {
@@ -363,12 +391,14 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 				showThread := needsThreadMarker && i == 0
 
 				header := Header{
-					Author:    comment.Author.Login,
-					Timestamp: comment.CreatedAt,
-					NodeID:    comment.ID,
-					IsNew:     comment.IsNew,
-					IsFile:    thread.SubjectType == SubjectTypeFile,
-					IsThread:  showThread,
+					Author:     comment.Author.Login,
+					Timestamp:  comment.CreatedAt,
+					NodeID:     comment.ID,
+					IsNew:      comment.IsNew,
+					IsFile:     thread.SubjectType == SubjectTypeFile,
+					IsThread:   showThread,
+					IsOutdated: thread.IsOutdated,
+					IsResolved: thread.IsResolved,
 				}
 
 				// Handle range comments
@@ -379,7 +409,7 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 				commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, formatHeader(header)))
 
 				// Wrap and add body lines
-				wrappedBody := wrapCommentBody(comment.Body, prefixLen)
+				wrappedBody := wrapCommentBody(comment.Body, prefixLen+len(indent))
 				for _, bodyLine := range strings.Split(wrappedBody, "\n") {
 					commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, bodyLine))
 				}
@@ -387,13 +417,49 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 		}
 
 		// Insert after the target line (line numbers are 1-based)
-		if line >= 1 && line <= len(lines) {
-			// Insert commentLines after lines[line-1]
-			newLines := make([]string, 0, len(lines)+len(commentLines))
-			newLines = append(newLines, lines[:line]...)
-			newLines = append(newLines, commentLines...)
-			newLines = append(newLines, lines[line:]...)
-			lines = newLines
+		newLines := make([]string, 0, len(lines)+len(commentLines))
+		newLines = append(newLines, lines[:line]...)
+		newLines = append(newLines, commentLines...)
+		newLines = append(newLines, lines[line:]...)
+		lines = newLines
+	}
+
+	// Append obsolete threads at end of file
+	if len(obsoleteThreads) > 0 {
+		// Sort by original line number for consistent ordering
+		sort.Slice(obsoleteThreads, func(i, j int) bool {
+			return obsoleteThreads[i].OriginalLine < obsoleteThreads[j].OriginalLine
+		})
+
+		lines = append(lines, "")
+		lines = append(lines, formatCraftLine(style.linePrefix, "=== obsolete threads (code has changed) ==="))
+
+		for threadIdx, thread := range obsoleteThreads {
+			needsThreadMarker := threadIdx > 0
+
+			for i, comment := range thread.Comments {
+				showThread := needsThreadMarker && i == 0
+
+				header := Header{
+					Author:     comment.Author.Login,
+					Timestamp:  comment.CreatedAt,
+					NodeID:     comment.ID,
+					IsNew:      comment.IsNew,
+					IsFile:     thread.SubjectType == SubjectTypeFile,
+					IsThread:   showThread,
+					IsOutdated: true,
+					IsResolved: thread.IsResolved,
+					OrigLine:   thread.OriginalLine,
+				}
+
+				lines = append(lines, formatCraftLine(style.linePrefix, formatHeader(header)))
+
+				// Wrap and add body lines
+				wrappedBody := wrapCommentBody(comment.Body, prefixLen)
+				for _, bodyLine := range strings.Split(wrappedBody, "\n") {
+					lines = append(lines, formatCraftLine(style.linePrefix, bodyLine))
+				}
+			}
 		}
 	}
 
@@ -616,15 +682,16 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 	}
 
 	lines := strings.Split(string(content), "\n")
-	for lineNum, line := range lines {
-		lineNum++ // 1-based line numbers
+	sourceLineNum := 0 // line number excluding craft comments
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
 		// Check if this is a craft line
 		if !strings.HasPrefix(line, craftLinePrefix) {
 			// Non-craft line - this ends any current thread
 			flushThread()
-			lastCodeLine = lineNum
+			sourceLineNum++
+			lastCodeLine = sourceLineNum
 			continue
 		}
 

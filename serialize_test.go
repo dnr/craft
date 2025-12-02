@@ -450,6 +450,239 @@ func TestPRStateAuthorAndBody(t *testing.T) {
 	assert.Equal(t, "LGTM!", pr2.IssueComments[0].Body)
 }
 
+func TestOutdatedResolvedHeaders(t *testing.T) {
+	tests := []struct {
+		name   string
+		header Header
+	}{
+		{
+			name: "outdated comment",
+			header: Header{
+				Author:     "alice",
+				Timestamp:  time.Date(2025, 1, 15, 12, 34, 0, 0, time.UTC),
+				NodeID:     "PRRC_kwDOPgi5ks6ZBMOo",
+				IsOutdated: true,
+			},
+		},
+		{
+			name: "resolved comment",
+			header: Header{
+				Author:     "bob",
+				Timestamp:  time.Date(2025, 2, 20, 8, 0, 0, 0, time.UTC),
+				NodeID:     "PRRC_kwDOPgi5ks6ABC123",
+				IsResolved: true,
+			},
+		},
+		{
+			name: "outdated and resolved",
+			header: Header{
+				Author:     "carol",
+				Timestamp:  time.Date(2025, 3, 10, 16, 45, 0, 0, time.UTC),
+				NodeID:     "PRRC_kwDOPgi5ks6XYZ789",
+				IsOutdated: true,
+				IsResolved: true,
+			},
+		},
+		{
+			name: "with origline",
+			header: Header{
+				Author:     "dave",
+				Timestamp:  time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC),
+				NodeID:     "PRRC_kwDOPgi5ks6DEF456",
+				IsOutdated: true,
+				OrigLine:   42,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			formatted := formatHeader(tt.header)
+			parsed, ok := parseHeader(formatted)
+			require.True(t, ok, "parseHeader should succeed")
+
+			assert.Equal(t, tt.header.Author, parsed.Author)
+			assert.Equal(t, tt.header.Timestamp.Unix(), parsed.Timestamp.Unix())
+			assert.Equal(t, tt.header.NodeID, parsed.NodeID)
+			assert.Equal(t, tt.header.IsOutdated, parsed.IsOutdated)
+			assert.Equal(t, tt.header.IsResolved, parsed.IsResolved)
+			assert.Equal(t, tt.header.OrigLine, parsed.OrigLine)
+		})
+	}
+}
+
+func TestObsoleteThreadsAtEndOfFile(t *testing.T) {
+	// Test that threads with out-of-bounds line numbers go to end of file
+	pr := &PullRequest{
+		ID:         "PR_test",
+		Number:     1,
+		HeadRefOID: "abcd1234",
+		ReviewThreads: []ReviewThread{
+			{
+				ID:           "PRRT_valid",
+				Path:         "file.go",
+				DiffSide:     DiffSideRight,
+				Line:         2, // valid line
+				OriginalLine: 2,
+				SubjectType:  SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_valid",
+						Author:    Actor{Login: "alice"},
+						Body:      "Valid comment on line 2",
+						CreatedAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+			{
+				ID:           "PRRT_obsolete",
+				Path:         "file.go",
+				DiffSide:     DiffSideRight,
+				Line:         0, // out of bounds - obsolete
+				OriginalLine: 50,
+				SubjectType:  SubjectTypeLine,
+				IsResolved:   true,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_obsolete",
+						Author:    Actor{Login: "bob"},
+						Body:      "Obsolete comment",
+						CreatedAt: time.Date(2025, 1, 1, 9, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+		},
+	}
+
+	memfs := fstest.MapFS{
+		"file.go": &fstest.MapFile{
+			Data: []byte("line 1\nline 2\nline 3\n"),
+		},
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	err := Serialize(pr, opts)
+	require.NoError(t, err)
+
+	// Check the file content
+	content := string(memfs["file.go"].Data)
+
+	// Should have the valid comment after line 2
+	assert.Contains(t, content, "Valid comment on line 2")
+
+	// Should have obsolete section at end
+	assert.Contains(t, content, "=== obsolete threads")
+	assert.Contains(t, content, "Obsolete comment")
+	assert.Contains(t, content, "origline 50")
+	assert.Contains(t, content, "resolved")
+
+	// Deserialize and verify we get both threads back
+	pr2, err := Deserialize(opts)
+	require.NoError(t, err)
+
+	require.Len(t, pr2.ReviewThreads, 2)
+
+	// Find the valid and obsolete threads
+	var validThread, obsoleteThread *ReviewThread
+	for i := range pr2.ReviewThreads {
+		if pr2.ReviewThreads[i].Comments[0].Body == "Valid comment on line 2" {
+			validThread = &pr2.ReviewThreads[i]
+		} else {
+			obsoleteThread = &pr2.ReviewThreads[i]
+		}
+	}
+
+	require.NotNil(t, validThread)
+	require.NotNil(t, obsoleteThread)
+
+	assert.Equal(t, 2, validThread.Line)
+	assert.Equal(t, "Obsolete comment", obsoleteThread.Comments[0].Body)
+}
+
+func TestLineNumbersIgnoreCraftComments(t *testing.T) {
+	// Test that deserialize computes correct line numbers
+	// by not counting craft comment lines
+	fileContent := `line 1
+line 2
+// ` + `❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6AAA111 ─────
+// ` + `❯ Comment on line 2
+line 3
+// ` + `❯ ───── by bob ─ at 2025-01-15 13:00 ─ prrc kwDOPgi5ks6BBB222 ─────
+// ` + `❯ Comment on line 3
+line 4
+`
+	prState := `───── pr ─ number 1 ─ pr kwDOPgi5ks6k-agY ─ head abc123 ─────
+
+`
+
+	memfs := fstest.MapFS{
+		"test.go":   &fstest.MapFile{Data: []byte(fileContent)},
+		prStateFile: &fstest.MapFile{Data: []byte(prState)},
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	pr, err := Deserialize(opts)
+	require.NoError(t, err)
+
+	require.Len(t, pr.ReviewThreads, 2)
+
+	// Sort by comment ID to get consistent ordering
+	threads := pr.ReviewThreads
+	if threads[0].Comments[0].ID > threads[1].Comments[0].ID {
+		threads[0], threads[1] = threads[1], threads[0]
+	}
+
+	// First comment should be on line 2 (not line 2 + craft lines)
+	assert.Equal(t, 2, threads[0].Line, "First comment should be on source line 2")
+	assert.Equal(t, "Comment on line 2", threads[0].Comments[0].Body)
+
+	// Second comment should be on line 3 (not line 3 + craft lines)
+	assert.Equal(t, 3, threads[1].Line, "Second comment should be on source line 3")
+	assert.Equal(t, "Comment on line 3", threads[1].Comments[0].Body)
+}
+
+func TestOutdatedResolvedInSerialize(t *testing.T) {
+	// Test that IsOutdated and IsResolved from threads are included in headers
+	pr := &PullRequest{
+		ID:         "PR_test",
+		Number:     1,
+		HeadRefOID: "abcd1234",
+		ReviewThreads: []ReviewThread{
+			{
+				ID:          "PRRT_1",
+				Path:        "file.go",
+				DiffSide:    DiffSideRight,
+				Line:        1,
+				SubjectType: SubjectTypeLine,
+				IsOutdated:  true,
+				IsResolved:  true,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_1",
+						Author:    Actor{Login: "alice"},
+						Body:      "Outdated and resolved",
+						CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+		},
+	}
+
+	memfs := fstest.MapFS{
+		"file.go": &fstest.MapFile{
+			Data: []byte("code here\n"),
+		},
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	err := Serialize(pr, opts)
+	require.NoError(t, err)
+
+	content := string(memfs["file.go"].Data)
+	assert.Contains(t, content, "outdated")
+	assert.Contains(t, content, "resolved")
+}
+
 func TestPreservesTrailingNewline(t *testing.T) {
 	// File with trailing newline
 	withNewline := "line 1\nline 2\n"
