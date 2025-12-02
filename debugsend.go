@@ -99,7 +99,7 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 }
 
 // addReviewThread adds a new thread to a pending review.
-func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, reviewID githubv4.ID, path string, line int, side DiffSide, subject SubjectType, body string) (string, error) {
+func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, reviewID githubv4.ID, path string, line int, startLine *int, side DiffSide, subject SubjectType, body string) (string, error) {
 	var mutation struct {
 		AddPullRequestReviewThread struct {
 			Thread struct {
@@ -119,6 +119,11 @@ func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, rev
 		Body:                githubv4.String(body),
 		Line:                &lineVal,
 		Side:                &sideVal,
+	}
+
+	if startLine != nil {
+		startLineVal := githubv4.Int(*startLine)
+		input.StartLine = &startLineVal
 	}
 
 	if subject == SubjectTypeLine {

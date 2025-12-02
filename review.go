@@ -14,11 +14,12 @@ type ReviewToSend struct {
 }
 
 type NewThreadInfo struct {
-	Path    string
-	Line    int
-	Side    DiffSide
-	Subject SubjectType
-	Body    string
+	Path      string
+	Line      int
+	StartLine *int // Start line for multi-line comments (nil for single line)
+	Side      DiffSide
+	Subject   SubjectType
+	Body      string
 }
 
 type ReplyInfo struct {
@@ -46,11 +47,12 @@ func CollectNewComments(pr *PullRequest) (*ReviewToSend, error) {
 				continue
 			}
 			review.NewThreads = append(review.NewThreads, NewThreadInfo{
-				Path:    thread.Path,
-				Line:    thread.Line,
-				Side:    thread.DiffSide,
-				Subject: thread.SubjectType,
-				Body:    c.Body,
+				Path:      thread.Path,
+				Line:      thread.Line,
+				StartLine: thread.StartLine,
+				Side:      thread.DiffSide,
+				Subject:   thread.SubjectType,
+				Body:      c.Body,
 			})
 		} else {
 			// Existing thread - look for new replies
@@ -124,7 +126,7 @@ func (r *ReviewToSend) Send(ctx context.Context, client *GitHubClient, prNodeID,
 	// Add new threads
 	for _, t := range r.NewThreads {
 		fmt.Printf("Adding thread on %s:%d... ", t.Path, t.Line)
-		_, err := client.addReviewThread(ctx, prNodeID, reviewID, t.Path, t.Line, t.Side, t.Subject, t.Body)
+		_, err := client.addReviewThread(ctx, prNodeID, reviewID, t.Path, t.Line, t.StartLine, t.Side, t.Subject, t.Body)
 		if err != nil {
 			return fmt.Errorf("adding thread: %w", err)
 		}
