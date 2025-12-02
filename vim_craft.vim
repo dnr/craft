@@ -4,6 +4,11 @@
 "nnoremap <leader>C :call craft#Comment()<CR>
 "vnoremap <leader>C :call craft#Comment()<CR>
 
+" Box drawing characters for craft comments
+let s:box_thread = '╓'  " Start of new thread (header)
+let s:box_reply = '╟'   " Reply within thread (header)
+let s:box_body = '║'    " Body line
+
 " Extract comment prefix from &commentstring (e.g., '// %s' -> '//')
 function! craft#Prefix()
   let l:cs = &commentstring
@@ -14,16 +19,17 @@ function! craft#Prefix()
   return '//'
 endfunction
 
-" Check if a line is a craft comment
+" Check if a line is a craft comment (contains any box char)
 function! craft#IsCraftLine(lnum)
-  return getline(a:lnum) =~# '❯'
+  let l:line = getline(a:lnum)
+  return l:line =~# '[╓╟║]'
 endfunction
 
 " Set up buffer-local comments setting for craft line wrapping.
 " This makes vim's formatoptions 'c' continue craft comments properly.
 function! craft#SetupComments()
   " Check if already set up (idempotent)
-  if &l:comments =~# '❯'
+  if &l:comments =~# '║'
     return
   endif
 
@@ -44,8 +50,8 @@ function! craft#SetupComments()
       continue
     endif
 
-    " Create craft version: original chars + ' ❯'
-    call add(l:new_parts, l:flags . ':' . l:chars . ' ❯')
+    " Create craft version: original chars + ' ║' for body continuation
+    call add(l:new_parts, l:flags . ':' . l:chars . ' ' . s:box_body)
   endfor
 
   " Prepend to comments (buffer-local)
@@ -75,24 +81,24 @@ function! craft#Comment() range
 
   " Check if we're in a craft comment chain
   if craft#IsCraftLine(line('.'))
-    " Reply: go to end of chain and add new comment
+    " Reply: go to end of chain and add new comment with reply marker
     let l:insert_after = craft#IsChainEnd(line('.'))
     let l:indent = craft#GetIndent(line('.'))
-    let l:header = l:indent . l:prefix . ' ❯ ───── new ─────'
+    let l:header = l:indent . l:prefix . ' ' . s:box_reply . '───── new'
   elseif a:firstline != a:lastline
     " Visual range: add range comment after last line of selection
     let l:insert_after = a:lastline
     let l:indent = craft#GetIndent(a:lastline)
     let l:range_size = a:firstline - a:lastline
-    let l:header = l:indent . l:prefix . ' ❯ ───── new ─ range ' . l:range_size . ' ─────'
+    let l:header = l:indent . l:prefix . ' ' . s:box_thread . '───── new ─ range ' . l:range_size
   else
     " New comment on current line
     let l:insert_after = line('.')
     let l:indent = craft#GetIndent(line('.'))
-    let l:header = l:indent . l:prefix . ' ❯ ───── new ─────'
+    let l:header = l:indent . l:prefix . ' ' . s:box_thread . '───── new'
   endif
 
-  let l:body = l:indent . l:prefix . ' ❯ '
+  let l:body = l:indent . l:prefix . ' ' . s:box_body . ' '
   call append(l:insert_after, [l:header, l:body])
   call cursor(l:insert_after + 2, len(l:body) + 1)
   call craft#SetupComments()

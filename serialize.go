@@ -28,7 +28,11 @@ func (d DirFS) Open(name string) (fs.File, error) {
 func (d DirFS) Root() string { return string(d) }
 
 const (
-	craftPrefix    = "❯"
+	// Box drawing characters for craft comments
+	boxThread = "╓" // start of new thread (header line)
+	boxReply  = "╟" // reply within thread (header line)
+	boxBody   = "║" // body line
+
 	headerStart    = "─────"
 	headerFieldSep = " ─ "
 	prStateFile    = "PR-STATE.txt"
@@ -131,8 +135,34 @@ func getCommentStyle(path string) commentStyle {
 }
 
 // formatCraftLine formats a line of craft content for a source file.
-func formatCraftLine(linePrefix, content string) string {
-	return linePrefix + " " + craftPrefix + " " + content
+// boxChar should be boxThread, boxReply, or boxBody.
+// For headers (starting with ─), no space between box char and content: ╓─────
+// For body lines, space after box char: ║ text
+func formatCraftLine(linePrefix, boxChar, content string) string {
+	if strings.HasPrefix(content, "─") {
+		return linePrefix + " " + boxChar + content
+	}
+	return linePrefix + " " + boxChar + " " + content
+}
+
+// isCraftLine checks if a line (after trimming) starts with a craft box character.
+// Returns the box char and remaining content, or empty string if not a craft line.
+func parseCraftLine(line, commentPrefix string) (boxChar, content string, ok bool) {
+	line = strings.TrimSpace(line)
+	prefix := commentPrefix + " "
+	if !strings.HasPrefix(line, prefix) {
+		return "", "", false
+	}
+	line = strings.TrimPrefix(line, prefix)
+	// Check for any of the box characters
+	for _, box := range []string{boxThread, boxReply, boxBody} {
+		if strings.HasPrefix(line, box) {
+			content = strings.TrimPrefix(line, box)
+			content = strings.TrimPrefix(content, " ") // optional space after box char
+			return box, content, true
+		}
+	}
+	return "", "", false
 }
 
 // Header represents a parsed comment header.
@@ -143,7 +173,6 @@ type Header struct {
 	IsNew      bool
 	IsFile     bool // file-level comment
 	Range      int  // negative number for range comments (e.g., -12 means 12 lines above)
-	IsThread   bool // explicit new thread marker (for multiple threads on same line)
 	IsOutdated bool // code has changed since comment was made
 	IsResolved bool // thread has been resolved
 	OrigLine   int  // original line number (for outdated threads)
@@ -178,6 +207,7 @@ func parseNodeID(s string) string {
 }
 
 // formatHeader creates a header line from a Header struct.
+// Result looks like: ────── @author ─ at 2025-01-15 12:34 ─ prrc xxx
 func formatHeader(h Header) string {
 	var fields []string
 
@@ -185,7 +215,7 @@ func formatHeader(h Header) string {
 		fields = append(fields, "new")
 	} else {
 		if h.Author != "" {
-			fields = append(fields, "by "+h.Author)
+			fields = append(fields, "@"+h.Author)
 		}
 		if !h.Timestamp.IsZero() {
 			fields = append(fields, "at "+h.Timestamp.Format("2006-01-02 15:04"))
@@ -198,10 +228,6 @@ func formatHeader(h Header) string {
 
 	if h.Range != 0 {
 		fields = append(fields, fmt.Sprintf("range %d", h.Range))
-	}
-
-	if h.IsThread {
-		fields = append(fields, "thread")
 	}
 
 	if h.IsOutdated {
@@ -220,18 +246,19 @@ func formatHeader(h Header) string {
 		fields = append(fields, formatNodeID(h.NodeID))
 	}
 
-	return headerStart + " " + strings.Join(fields, headerFieldSep) + " " + headerStart
+	return headerStart + " " + strings.Join(fields, headerFieldSep)
 }
 
 // parseHeader parses a header line into a Header struct.
+// Accepts headers starting with ───── (trailing dashes optional for backwards compat).
 func parseHeader(line string) (Header, bool) {
-	if !strings.HasPrefix(line, headerStart) || !strings.HasSuffix(line, headerStart) {
+	if !strings.HasPrefix(line, headerStart) {
 		return Header{}, false
 	}
 
-	// Strip the delimiters
+	// Strip leading delimiter and optional trailing delimiter
 	content := strings.TrimPrefix(line, headerStart)
-	content = strings.TrimSuffix(content, headerStart)
+	content = strings.TrimSuffix(content, headerStart) // optional, for backwards compat
 	content = strings.TrimSpace(content)
 
 	if content == "" {
@@ -252,14 +279,14 @@ func parseHeader(line string) (Header, bool) {
 			h.IsNew = true
 		case field == "file":
 			h.IsFile = true
-		case field == "thread":
-			h.IsThread = true
 		case field == "outdated":
 			h.IsOutdated = true
 		case field == "resolved":
 			h.IsResolved = true
+		case strings.HasPrefix(field, "@"):
+			h.Author = strings.TrimPrefix(field, "@")
 		case strings.HasPrefix(field, "by "):
-			h.Author = strings.TrimPrefix(field, "by ")
+			h.Author = strings.TrimPrefix(field, "by ") // backwards compat
 		case strings.HasPrefix(field, "at "):
 			ts := strings.TrimPrefix(field, "at ")
 			if t, err := time.Parse("2006-01-02 15:04", ts); err == nil {
@@ -338,7 +365,9 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 	var lines []string
 	if content != nil {
 		for _, line := range strings.Split(string(content), "\n") {
-			if !strings.Contains(line, " "+craftPrefix+" ") {
+			// Check if line contains any craft box character after comment prefix
+			_, _, isCraft := parseCraftLine(line, style.linePrefix)
+			if !isCraft {
 				lines = append(lines, line)
 			}
 		}
@@ -370,9 +399,8 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 		threadsByLine[thread.Line] = append(threadsByLine[thread.Line], thread)
 	}
 
-	// Calculate prefix length for wrapping (no indent for simplicity)
-	fullPrefix := style.linePrefix + " " + craftPrefix + " "
-	prefixLen := len(fullPrefix)
+	// Calculate prefix length for wrapping: "// ║ " = comment + space + box + space
+	prefixLen := len(style.linePrefix) + 1 + len(boxBody) + 1
 
 	// Process each line's threads
 	for line, lineThreads := range threadsByLine {
@@ -389,12 +417,14 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 
 		var commentLines []string
 		for threadIdx, thread := range lineThreads {
-			// Add thread marker if this is not the first thread on this line
-			needsThreadMarker := threadIdx > 0
-
 			for i, comment := range thread.Comments {
-				// First comment in non-first thread needs thread marker
-				showThread := needsThreadMarker && i == 0
+				// Determine box char: ╓ for first comment or new thread, ╟ for replies
+				boxChar := boxReply
+				if i == 0 && threadIdx == 0 {
+					boxChar = boxThread // first comment of first thread
+				} else if i == 0 && threadIdx > 0 {
+					boxChar = boxThread // first comment of subsequent thread (new thread)
+				}
 
 				header := Header{
 					Author:     comment.Author.Login,
@@ -402,7 +432,6 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 					NodeID:     comment.ID,
 					IsNew:      comment.IsNew,
 					IsFile:     thread.SubjectType == SubjectTypeFile,
-					IsThread:   showThread,
 					IsOutdated: thread.IsOutdated,
 					IsResolved: thread.IsResolved,
 				}
@@ -412,12 +441,12 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 					header.Range = *thread.StartLine - thread.Line // negative
 				}
 
-				commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, formatHeader(header)))
+				commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, boxChar, formatHeader(header)))
 
 				// Wrap and add body lines
 				wrappedBody := wrapCommentBody(comment.Body, prefixLen+len(indent))
 				for _, bodyLine := range strings.Split(wrappedBody, "\n") {
-					commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, bodyLine))
+					commentLines = append(commentLines, indent+formatCraftLine(style.linePrefix, boxBody, bodyLine))
 				}
 			}
 		}
@@ -437,13 +466,16 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 			return outdatedThreads[i].OriginalLine < outdatedThreads[j].OriginalLine
 		})
 
-		lines = append(lines, "", formatCraftLine(style.linePrefix, "━━━━━ outdated comments (code has changed) ━━━━━"))
+		lines = append(lines, "", formatCraftLine(style.linePrefix, boxBody, "━━━ outdated comments (code has changed) ━━━"))
 
 		for threadIdx, thread := range outdatedThreads {
-			needsThreadMarker := threadIdx > 0
-
 			for i, comment := range thread.Comments {
-				showThread := needsThreadMarker && i == 0
+				// ╓ for first comment or new thread, ╟ for replies
+				boxChar := boxReply
+				if i == 0 {
+					boxChar = boxThread // new thread for each outdated thread
+				}
+				_ = threadIdx // each outdated thread starts fresh
 
 				header := Header{
 					Author:     comment.Author.Login,
@@ -451,18 +483,17 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 					NodeID:     comment.ID,
 					IsNew:      comment.IsNew,
 					IsFile:     thread.SubjectType == SubjectTypeFile,
-					IsThread:   showThread,
 					IsOutdated: true,
 					IsResolved: thread.IsResolved,
 					OrigLine:   thread.OriginalLine,
 				}
 
-				lines = append(lines, formatCraftLine(style.linePrefix, formatHeader(header)))
+				lines = append(lines, formatCraftLine(style.linePrefix, boxChar, formatHeader(header)))
 
 				// Wrap and add body lines
 				wrappedBody := wrapCommentBody(comment.Body, prefixLen)
 				for _, bodyLine := range strings.Split(wrappedBody, "\n") {
-					lines = append(lines, formatCraftLine(style.linePrefix, bodyLine))
+					lines = append(lines, formatCraftLine(style.linePrefix, boxBody, bodyLine))
 				}
 			}
 		}
@@ -484,9 +515,9 @@ func serializePRState(pr *PullRequest, fsys fs.FS) error {
 		"head " + pr.HeadRefOID,
 	}
 	if pr.Author.Login != "" {
-		metaFields = append(metaFields, "by "+pr.Author.Login)
+		metaFields = append(metaFields, "@"+pr.Author.Login)
 	}
-	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + " " + headerStart + "\n")
+	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + "\n")
 
 	// PR description body (informational only, ignored on deserialize)
 	if pr.Body != "" {
@@ -652,10 +683,15 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 	}
 
 	style := getCommentStyle(path)
-	craftLinePrefix := style.linePrefix + " " + craftPrefix
 
-	// Skip binary files or files that don't contain the comment prefix for this file type
-	if bytes.IndexByte(content, 0) >= 0 || !bytes.Contains(content, []byte(craftLinePrefix)) {
+	// Skip binary files or files that don't contain any box characters
+	if bytes.IndexByte(content, 0) >= 0 {
+		return nil, nil
+	}
+	hasBox := bytes.Contains(content, []byte(boxThread)) ||
+		bytes.Contains(content, []byte(boxReply)) ||
+		bytes.Contains(content, []byte(boxBody))
+	if !hasBox {
 		return nil, nil
 	}
 
@@ -689,10 +725,9 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 	lines := strings.Split(string(content), "\n")
 	sourceLineNum := 0 // line number excluding craft comments
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-
 		// Check if this is a craft line
-		if !strings.HasPrefix(line, craftLinePrefix) {
+		boxChar, craftContent, isCraft := parseCraftLine(line, style.linePrefix)
+		if !isCraft {
 			// Non-craft line - this ends any current thread
 			flushThread()
 			sourceLineNum++
@@ -700,25 +735,21 @@ func deserializeFileComments(fsys fs.FS, path string) ([]ReviewThread, error) {
 			continue
 		}
 
-		// Extract craft content after the craft prefix
-		line = strings.TrimPrefix(line, craftLinePrefix)
-		line = strings.TrimSpace(line)
-
-		// Check for header
-		header, isHeader := parseHeader(line)
+		// Check for header (starts with ─────)
+		header, isHeader := parseHeader(craftContent)
 		if !isHeader {
-			// Body line
+			// Body line (║)
 			if currentComment != nil {
-				bodyLines = append(bodyLines, line)
+				bodyLines = append(bodyLines, craftContent)
 			}
 			continue
 		}
 
-		// Header line
+		// Header line - flush current comment
 		flushComment()
 
-		// Check if we need a new thread
-		if currentThread == nil || header.IsThread {
+		// ╓ = new thread, ╟ = reply within same thread
+		if currentThread == nil || boxChar == boxThread {
 			flushThread()
 			currentThread = &ReviewThread{
 				Path:        path,

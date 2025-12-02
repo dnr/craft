@@ -47,15 +47,6 @@ func TestHeaderRoundTrip(t *testing.T) {
 				Range:     -5,
 			},
 		},
-		{
-			name: "thread marker",
-			header: Header{
-				Author:    "dave",
-				Timestamp: time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC),
-				NodeID:    "PRRC_kwDOPgi5ks6DEF456",
-				IsThread:  true,
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -70,7 +61,6 @@ func TestHeaderRoundTrip(t *testing.T) {
 			assert.Equal(t, tt.header.IsNew, parsed.IsNew)
 			assert.Equal(t, tt.header.IsFile, parsed.IsFile)
 			assert.Equal(t, tt.header.Range, parsed.Range)
-			assert.Equal(t, tt.header.IsThread, parsed.IsThread)
 		})
 	}
 }
@@ -226,21 +216,21 @@ func helper() {
 }
 
 func TestFileRoundTrip(t *testing.T) {
-	// Start with files that already have craft comments
+	// Start with files that already have craft comments (new box char format)
 	mainGoWithComments := `package main
 
 import "fmt"
 
 func main() {
 	fmt.Println("hello")
-	// ` + /* break up string so we can use craft in this repo */ `❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6IymTJ ─────
-	// ` + `❯ Nice print statement!
+	// ` + /* break up string so we can use craft in this repo */ `╓───── @alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6IymTJ
+	// ║ Nice print statement!
 	fmt.Println("world")
 }
 `
-	prState := `───── pr ─ number 42 ─ pr kwDOPgi5ks6k-agY ─ head abc123 ─────
+	prState := `───── pr ─ number 42 ─ pr kwDOPgi5ks6k-agY ─ head abc123
 
-───── by dave ─ at 2025-01-17 10:00 ─ ic kwDOPgi5ks1234567 ─────
+───── @dave ─ at 2025-01-17 10:00 ─ ic kwDOPgi5ks1234567
 Overall LGTM!
 
 `
@@ -438,7 +428,7 @@ func TestPRStateAuthorAndBody(t *testing.T) {
 
 	// Verify PR-STATE.txt contains author and body
 	stateData := string(memfs[prStateFile].Data)
-	assert.Contains(t, stateData, "by alice")
+	assert.Contains(t, stateData, "@alice")
 	assert.Contains(t, stateData, "This is the PR description.")
 
 	// Deserialize and verify author is parsed, body is ignored
@@ -572,7 +562,7 @@ func TestOutdatedThreadsAtEndOfFile(t *testing.T) {
 	assert.Contains(t, content, "Valid comment on line 2")
 
 	// Should have outdated section at end
-	assert.Contains(t, content, "━━━━━ outdated comments")
+	assert.Contains(t, content, "━━━ outdated comments")
 	assert.Contains(t, content, "Outdated comment")
 	assert.Contains(t, content, "origline 50")
 	assert.Contains(t, content, "resolved")
@@ -605,14 +595,14 @@ func TestLineNumbersIgnoreCraftComments(t *testing.T) {
 	// by not counting craft comment lines
 	fileContent := `line 1
 line 2
-// ` + `❯ ───── by alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6AAA111 ─────
-// ` + `❯ Comment on line 2
+// ` + `╓───── @alice ─ at 2025-01-15 12:34 ─ prrc kwDOPgi5ks6AAA111
+// ║ Comment on line 2
 line 3
-// ` + `❯ ───── by bob ─ at 2025-01-15 13:00 ─ prrc kwDOPgi5ks6BBB222 ─────
-// ` + `❯ Comment on line 3
+// ` + `╓───── @bob ─ at 2025-01-15 13:00 ─ prrc kwDOPgi5ks6BBB222
+// ║ Comment on line 3
 line 4
 `
-	prState := `───── pr ─ number 1 ─ pr kwDOPgi5ks6k-agY ─ head abc123 ─────
+	prState := `───── pr ─ number 1 ─ pr kwDOPgi5ks6k-agY ─ head abc123
 
 `
 
@@ -723,7 +713,7 @@ func TestDeletedFileCreatesOutdatedOnly(t *testing.T) {
 	require.True(t, ok, "deleted.go should be created")
 
 	content := string(deletedFile.Data)
-	assert.Contains(t, content, "━━━━━ outdated comments")
+	assert.Contains(t, content, "━━━ outdated comments")
 	assert.Contains(t, content, "Comment on deleted file")
 	assert.Contains(t, content, "origline 10")
 }
@@ -786,12 +776,12 @@ func TestLeftSideCommentsAreOutdated(t *testing.T) {
 	assert.Contains(t, content, "Comment on new code")
 
 	// LEFT side comment should be in outdated section at end
-	assert.Contains(t, content, "━━━━━ outdated comments")
+	assert.Contains(t, content, "━━━ outdated comments")
 	assert.Contains(t, content, "Comment on deleted code")
 
 	// Verify the inline comment comes before the outdated section
 	rightIdx := strings.Index(content, "Comment on new code")
-	outdatedIdx := strings.Index(content, "━━━━━ outdated comments")
+	outdatedIdx := strings.Index(content, "━━━ outdated comments")
 	assert.True(t, rightIdx < outdatedIdx, "inline comment should come before outdated section")
 }
 
