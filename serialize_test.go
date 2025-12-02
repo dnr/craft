@@ -562,7 +562,7 @@ func TestOutdatedThreadsAtEndOfFile(t *testing.T) {
 	assert.Contains(t, content, "Valid comment on line 2")
 
 	// Should have outdated section at end
-	assert.Contains(t, content, "━━━ outdated comments")
+	assert.Contains(t, content, "━━━━━━━━━ outdated comments")
 	assert.Contains(t, content, "Outdated comment")
 	assert.Contains(t, content, "origline 50")
 	assert.Contains(t, content, "resolved")
@@ -713,7 +713,7 @@ func TestDeletedFileCreatesOutdatedOnly(t *testing.T) {
 	require.True(t, ok, "deleted.go should be created")
 
 	content := string(deletedFile.Data)
-	assert.Contains(t, content, "━━━ outdated comments")
+	assert.Contains(t, content, "━━━━━━━━━ outdated comments")
 	assert.Contains(t, content, "Comment on deleted file")
 	assert.Contains(t, content, "origline 10")
 }
@@ -776,12 +776,12 @@ func TestLeftSideCommentsAreOutdated(t *testing.T) {
 	assert.Contains(t, content, "Comment on new code")
 
 	// LEFT side comment should be in outdated section at end
-	assert.Contains(t, content, "━━━ outdated comments")
+	assert.Contains(t, content, "━━━━━━━━━ outdated comments")
 	assert.Contains(t, content, "Comment on deleted code")
 
 	// Verify the inline comment comes before the outdated section
 	rightIdx := strings.Index(content, "Comment on new code")
-	outdatedIdx := strings.Index(content, "━━━ outdated comments")
+	outdatedIdx := strings.Index(content, "━━━━━━━━━ outdated comments")
 	assert.True(t, rightIdx < outdatedIdx, "inline comment should come before outdated section")
 }
 

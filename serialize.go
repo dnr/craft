@@ -466,7 +466,7 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 			return outdatedThreads[i].OriginalLine < outdatedThreads[j].OriginalLine
 		})
 
-		lines = append(lines, "", formatCraftLine(style.linePrefix, boxBody, "━━━ outdated comments (code has changed) ━━━"))
+		lines = append(lines, "", style.linePrefix+" ━━━━━━━━━ outdated comments")
 
 		for threadIdx, thread := range outdatedThreads {
 			for i, comment := range thread.Comments {
