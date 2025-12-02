@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -681,6 +682,117 @@ func TestOutdatedResolvedInSerialize(t *testing.T) {
 	content := string(memfs["file.go"].Data)
 	assert.Contains(t, content, "outdated")
 	assert.Contains(t, content, "resolved")
+}
+
+func TestDeletedFileCreatesOutdatedOnly(t *testing.T) {
+	// Test that comments on a deleted file create the file with just outdated section
+	pr := &PullRequest{
+		ID:         "PR_test",
+		Number:     1,
+		HeadRefOID: "abcd1234",
+		ReviewThreads: []ReviewThread{
+			{
+				ID:           "PRRT_deleted",
+				Path:         "deleted.go", // This file doesn't exist
+				DiffSide:     DiffSideRight,
+				Line:         10,
+				OriginalLine: 10,
+				SubjectType:  SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_deleted",
+						Author:    Actor{Login: "alice"},
+						Body:      "Comment on deleted file",
+						CreatedAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+		},
+	}
+
+	memfs := fstest.MapFS{
+		// Note: deleted.go is NOT in the filesystem
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	err := Serialize(pr, opts)
+	require.NoError(t, err)
+
+	// File should be created with outdated section
+	deletedFile, ok := memfs["deleted.go"]
+	require.True(t, ok, "deleted.go should be created")
+
+	content := string(deletedFile.Data)
+	assert.Contains(t, content, "━━━━━ outdated comments")
+	assert.Contains(t, content, "Comment on deleted file")
+	assert.Contains(t, content, "origline 10")
+}
+
+func TestLeftSideCommentsAreOutdated(t *testing.T) {
+	// Test that LEFT side comments (on old/deleted code) are treated as outdated
+	pr := &PullRequest{
+		ID:         "PR_test",
+		Number:     1,
+		HeadRefOID: "abcd1234",
+		ReviewThreads: []ReviewThread{
+			{
+				ID:           "PRRT_right",
+				Path:         "file.go",
+				DiffSide:     DiffSideRight,
+				Line:         2,
+				OriginalLine: 2,
+				SubjectType:  SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_right",
+						Author:    Actor{Login: "alice"},
+						Body:      "Comment on new code",
+						CreatedAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+			{
+				ID:           "PRRT_left",
+				Path:         "file.go",
+				DiffSide:     DiffSideLeft, // LEFT = old/deleted code
+				Line:         5,
+				OriginalLine: 5,
+				SubjectType:  SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_left",
+						Author:    Actor{Login: "bob"},
+						Body:      "Comment on deleted code",
+						CreatedAt: time.Date(2025, 1, 1, 11, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+		},
+	}
+
+	memfs := fstest.MapFS{
+		"file.go": &fstest.MapFile{
+			Data: []byte("line 1\nline 2\nline 3\n"),
+		},
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	err := Serialize(pr, opts)
+	require.NoError(t, err)
+
+	content := string(memfs["file.go"].Data)
+
+	// RIGHT side comment should be inline after line 2
+	assert.Contains(t, content, "Comment on new code")
+
+	// LEFT side comment should be in outdated section at end
+	assert.Contains(t, content, "━━━━━ outdated comments")
+	assert.Contains(t, content, "Comment on deleted code")
+
+	// Verify the inline comment comes before the outdated section
+	rightIdx := strings.Index(content, "Comment on new code")
+	outdatedIdx := strings.Index(content, "━━━━━ outdated comments")
+	assert.True(t, rightIdx < outdatedIdx, "inline comment should come before outdated section")
 }
 
 func TestPreservesTrailingNewline(t *testing.T) {
