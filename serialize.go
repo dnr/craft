@@ -402,8 +402,16 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 	// Calculate prefix length for wrapping: "// ║ " = comment + space + box + space
 	prefixLen := len(style.linePrefix) + 1 + len(boxBody) + 1
 
-	// Process each line's threads
-	for line, lineThreads := range threadsByLine {
+	// Get line numbers and sort in descending order so insertions don't shift earlier lines
+	var lineNums []int
+	for line := range threadsByLine {
+		lineNums = append(lineNums, line)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(lineNums)))
+
+	// Process each line's threads (in descending line order)
+	for _, line := range lineNums {
+		lineThreads := threadsByLine[line]
 		// Sort threads on same line by first comment time
 		sort.Slice(lineThreads, func(i, j int) bool {
 			if len(lineThreads[i].Comments) == 0 || len(lineThreads[j].Comments) == 0 {

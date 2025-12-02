@@ -785,6 +785,110 @@ func TestLeftSideCommentsAreOutdated(t *testing.T) {
 	assert.True(t, rightIdx < outdatedIdx, "inline comment should come before outdated section")
 }
 
+func TestMultipleThreadsDifferentLines(t *testing.T) {
+	// Test multiple threads on different lines of the same file.
+	// This would catch the bug where map iteration order caused comments
+	// to be inserted at wrong positions when processing wasn't done in
+	// descending line order.
+	pr := &PullRequest{
+		ID:         "PR_test",
+		Number:     1,
+		HeadRefOID: "abcd1234",
+		ReviewThreads: []ReviewThread{
+			{
+				ID:          "PRRT_1",
+				Path:        "code.go",
+				DiffSide:    DiffSideRight,
+				Line:        2,
+				SubjectType: SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_1",
+						Author:    Actor{Login: "alice"},
+						Body:      "Comment on line 2",
+						CreatedAt: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+			{
+				ID:          "PRRT_2",
+				Path:        "code.go",
+				DiffSide:    DiffSideRight,
+				Line:        5,
+				SubjectType: SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_2",
+						Author:    Actor{Login: "bob"},
+						Body:      "Comment on line 5",
+						CreatedAt: time.Date(2025, 1, 1, 11, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+			{
+				ID:          "PRRT_3",
+				Path:        "code.go",
+				DiffSide:    DiffSideRight,
+				Line:        8,
+				SubjectType: SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_3",
+						Author:    Actor{Login: "carol"},
+						Body:      "Comment on line 8",
+						CreatedAt: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+			{
+				ID:          "PRRT_4",
+				Path:        "code.go",
+				DiffSide:    DiffSideRight,
+				Line:        10,
+				SubjectType: SubjectTypeLine,
+				Comments: []ReviewComment{
+					{
+						ID:        "PRRC_4",
+						Author:    Actor{Login: "dave"},
+						Body:      "Comment on line 10",
+						CreatedAt: time.Date(2025, 1, 1, 13, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+		},
+	}
+
+	memfs := fstest.MapFS{
+		"code.go": &fstest.MapFile{
+			Data: []byte("line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\n"),
+		},
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	err := Serialize(pr, opts)
+	require.NoError(t, err)
+
+	// Deserialize and verify line numbers are correct
+	pr2, err := Deserialize(opts)
+	require.NoError(t, err)
+
+	require.Len(t, pr2.ReviewThreads, 4)
+
+	// Create a map of comment body to line number for verification
+	lineByBody := make(map[string]int)
+	for _, thread := range pr2.ReviewThreads {
+		if len(thread.Comments) > 0 {
+			lineByBody[thread.Comments[0].Body] = thread.Line
+		}
+	}
+
+	// Verify each comment is on the correct line
+	assert.Equal(t, 2, lineByBody["Comment on line 2"], "Comment should be on line 2")
+	assert.Equal(t, 5, lineByBody["Comment on line 5"], "Comment should be on line 5")
+	assert.Equal(t, 8, lineByBody["Comment on line 8"], "Comment should be on line 8")
+	assert.Equal(t, 10, lineByBody["Comment on line 10"], "Comment should be on line 10")
+}
+
 func TestPreservesTrailingNewline(t *testing.T) {
 	// File with trailing newline
 	withNewline := "line 1\nline 2\n"
