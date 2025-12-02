@@ -46,7 +46,7 @@ func walkBlock(b markdown.Block, fn func(markdown.Inlines) markdown.Inlines) mar
 		}
 	case *markdown.Text:
 		b.Inline = fn(b.Inline)
-	// CodeBlock, HTMLBlock, ThematicBreak, Empty - no inlines to process
+		// CodeBlock, HTMLBlock, ThematicBreak, Empty - no inlines to process
 	}
 	return b
 }

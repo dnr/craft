@@ -147,17 +147,17 @@ func (c *GitHubClient) FetchPullRequest(ctx context.Context, owner, repo string,
 	var prQuery struct {
 		Repository struct {
 			PullRequest struct {
-				ID          githubv4.ID
-				Number      githubv4.Int
-				Title       githubv4.String
-				Body        githubv4.String
-				State       githubv4.String
-				IsDraft     githubv4.Boolean
-				BaseRefName githubv4.String
-				HeadRefName githubv4.String
-				BaseRefOid  githubv4.GitObjectID
-				HeadRefOid  githubv4.GitObjectID
-				Author      gqlActor
+				ID            githubv4.ID
+				Number        githubv4.Int
+				Title         githubv4.String
+				Body          githubv4.String
+				State         githubv4.String
+				IsDraft       githubv4.Boolean
+				BaseRefName   githubv4.String
+				HeadRefName   githubv4.String
+				BaseRefOid    githubv4.GitObjectID
+				HeadRefOid    githubv4.GitObjectID
+				Author        gqlActor
 				ReviewThreads struct {
 					PageInfo gqlPageInfo
 					Nodes    []gqlReviewThread
