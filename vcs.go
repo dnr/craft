@@ -165,13 +165,8 @@ func (j *JJRepo) runGitNoOutput(args ...string) error {
 }
 
 func (j *JJRepo) HasUncommittedChanges() (bool, error) {
-	// In jj, the working copy is always a commit, but we can check if
-	// the current change has any diff from its parent
-	out, err := j.run("diff", "--name-only")
-	if err != nil {
-		return false, err
-	}
-	return out != "", nil
+	// There is no such thing in jj.
+	return false, nil
 }
 
 func (j *JJRepo) FetchPRBranch(remote string, prNumber int) error {
