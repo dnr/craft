@@ -217,7 +217,8 @@ func (j *JJRepo) GetRemoteURL(remote string) (string, error) {
 
 func (j *JJRepo) GetCurrentBranch() (string, error) {
 	// Get bookmarks pointing to current change
-	return j.run("log", "-r", "heads(bookmarks() & ..@)", "--no-graph", "-T", "bookmarks")
+	return j.run("log", "-r", "heads(bookmarks(glob:'pr-*') & ..@)", "--no-graph",
+		"-T", "bookmarks.map(|b| if(b.name().starts_with('pr-'),b.name())).join('')")
 }
 
 func (j *JJRepo) GetConfigValue(key string) (string, error) {
