@@ -115,25 +115,55 @@ func (r *ReviewToSend) PrintDryRun() {
 	fmt.Printf("\nReview event: %s\n", r.ReviewEvent)
 }
 
+// ErrPendingReviewExists is returned when there's an existing pending review
+// and new threads need to be created.
+var ErrPendingReviewExists = fmt.Errorf("pending review exists")
+
 // Send sends the review to GitHub.
-func (r *ReviewToSend) Send(ctx context.Context, client *GitHubClient, prNodeID, headRefOID string) error {
-	// Get or create pending review
+// If discardPendingReview is true and there's an existing pending review with new threads
+// to add, the existing review will be discarded.
+func (r *ReviewToSend) Send(ctx context.Context, client *GitHubClient, prNodeID, headRefOID string, discardPendingReview bool) error {
+	var reviewID interface{}
+	var err error
+
+	// Check for existing pending review
 	fmt.Print("Getting/creating pending review... ")
-	reviewID, err := client.getOrCreatePendingReview(ctx, prNodeID, headRefOID)
+	existingReviewID, hasPending, err := client.getPendingReview(ctx, prNodeID)
 	if err != nil {
-		return fmt.Errorf("getting/creating review: %w", err)
+		return fmt.Errorf("checking for pending review: %w", err)
+	}
+
+	if len(r.NewThreads) > 0 {
+		// We have new threads - due to a GitHub bug, we must create them atomically
+		// with the review, not add them to an existing review.
+		if hasPending {
+			if !discardPendingReview {
+				fmt.Println()
+				return fmt.Errorf("%w: you have an existing pending review; use --discard-pending-review to discard it, or submit/discard it in the GitHub UI first", ErrPendingReviewExists)
+			}
+			// Discard the existing review
+			fmt.Print("discarding existing... ")
+			if err := client.deletePendingReview(ctx, existingReviewID); err != nil {
+				return fmt.Errorf("discarding pending review: %w", err)
+			}
+		}
+		// Create new review with threads
+		reviewID, err = client.startReviewWithThreads(ctx, prNodeID, headRefOID, r.NewThreads)
+		if err != nil {
+			return fmt.Errorf("creating review with threads: %w", err)
+		}
+	} else {
+		// No new threads - just get or create a pending review for replies
+		if hasPending {
+			reviewID = existingReviewID
+		} else {
+			reviewID, err = client.startReviewWithThreads(ctx, prNodeID, headRefOID, nil)
+			if err != nil {
+				return fmt.Errorf("creating review: %w", err)
+			}
+		}
 	}
 	fmt.Println("done")
-
-	// Add new threads
-	for _, t := range r.NewThreads {
-		fmt.Printf("Adding thread on %s:%d... ", t.Path, t.Line)
-		_, err := client.addReviewThread(ctx, prNodeID, reviewID, t.Path, t.Line, t.StartLine, t.Side, t.Subject, t.Body)
-		if err != nil {
-			return fmt.Errorf("adding thread: %w", err)
-		}
-		fmt.Println("done")
-	}
 
 	// Add replies
 	for _, reply := range r.Replies {

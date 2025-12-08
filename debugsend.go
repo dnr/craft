@@ -23,12 +23,13 @@ Example:
 }
 
 var (
-	flagDebugSendInput          string
-	flagDebugSendOwner          string
-	flagDebugSendRepo           string
-	flagDebugSendDryRun         bool
-	flagDebugSendApprove        bool
-	flagDebugSendRequestChanges bool
+	flagDebugSendInput                string
+	flagDebugSendOwner                string
+	flagDebugSendRepo                 string
+	flagDebugSendDryRun               bool
+	flagDebugSendApprove              bool
+	flagDebugSendRequestChanges       bool
+	flagDebugSendDiscardPendingReview bool
 )
 
 func init() {
@@ -38,6 +39,7 @@ func init() {
 	debugSendCmd.Flags().BoolVar(&flagDebugSendDryRun, "dry-run", false, "Print what would be sent without sending")
 	debugSendCmd.Flags().BoolVar(&flagDebugSendApprove, "approve", false, "Submit review as approval")
 	debugSendCmd.Flags().BoolVar(&flagDebugSendRequestChanges, "request-changes", false, "Submit review requesting changes")
+	debugSendCmd.Flags().BoolVar(&flagDebugSendDiscardPendingReview, "discard-pending-review", false, "Discard existing pending review if one exists")
 	debugSendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes")
 
 	debugSendCmd.MarkFlagRequired("input")
@@ -90,59 +92,12 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 	client := NewGitHubClient(token)
 
 	// Send the review using shared code
-	if err := review.Send(cmd.Context(), client, pr.ID, pr.HeadRefOID); err != nil {
+	if err := review.Send(cmd.Context(), client, pr.ID, pr.HeadRefOID, flagDebugSendDiscardPendingReview); err != nil {
 		return err
 	}
 
 	fmt.Println("\nAll comments sent successfully!")
 	return nil
-}
-
-// addReviewThread adds a new thread to a pending review.
-func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, reviewID githubv4.ID, path string, line int, startLine *int, side DiffSide, subject SubjectType, body string) (string, error) {
-	var mutation struct {
-		AddPullRequestReviewThread struct {
-			Thread struct {
-				ID githubv4.ID
-			}
-		} `graphql:"addPullRequestReviewThread(input: $input)"`
-	}
-
-	lineVal := githubv4.Int(line)
-	sideVal := githubv4.DiffSide(side)
-	prID := githubv4.ID(prNodeID)
-
-	input := githubv4.AddPullRequestReviewThreadInput{
-		PullRequestID:       &prID,
-		PullRequestReviewID: &reviewID,
-		Path:                githubv4.String(path),
-		Body:                githubv4.String(body),
-		Line:                &lineVal,
-		Side:                &sideVal,
-	}
-
-	if startLine != nil {
-		startLineVal := githubv4.Int(*startLine)
-		input.StartLine = &startLineVal
-	}
-
-	if subject == SubjectTypeLine {
-		st := githubv4.PullRequestReviewThreadSubjectType("LINE")
-		input.SubjectType = &st
-	} else if subject == SubjectTypeFile {
-		st := githubv4.PullRequestReviewThreadSubjectType("FILE")
-		input.SubjectType = &st
-	}
-
-	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
-		return "", fmt.Errorf("addPullRequestReviewThread mutation failed: %w", err)
-	}
-
-	if mutation.AddPullRequestReviewThread.Thread.ID == nil {
-		return "", fmt.Errorf("addPullRequestReviewThread returned nil thread ID")
-	}
-
-	return mutation.AddPullRequestReviewThread.Thread.ID.(string), nil
 }
 
 // addReviewComment adds a reply comment to a pending review.
@@ -171,9 +126,9 @@ func (c *GitHubClient) addReviewComment(ctx context.Context, reviewID githubv4.I
 	return string(mutation.AddPullRequestReviewComment.Comment.ID.(string)), nil
 }
 
-// getOrCreatePendingReview finds an existing pending review or creates a new one.
-func (c *GitHubClient) getOrCreatePendingReview(ctx context.Context, prNodeID, commitOID string) (githubv4.ID, error) {
-	// First, check for existing pending review
+// getPendingReview checks if there's an existing pending review.
+// Returns the review ID (if any), whether one exists, and any error.
+func (c *GitHubClient) getPendingReview(ctx context.Context, prNodeID string) (githubv4.ID, bool, error) {
 	var query struct {
 		Node struct {
 			PullRequest struct {
@@ -191,19 +146,36 @@ func (c *GitHubClient) getOrCreatePendingReview(ctx context.Context, prNodeID, c
 	}
 
 	if err := c.client.Query(ctx, &query, vars); err != nil {
-		return nil, fmt.Errorf("checking for pending review: %w", err)
+		return nil, false, fmt.Errorf("checking for pending review: %w", err)
 	}
 
 	if len(query.Node.PullRequest.Reviews.Nodes) > 0 {
-		return query.Node.PullRequest.Reviews.Nodes[0].ID, nil
+		return query.Node.PullRequest.Reviews.Nodes[0].ID, true, nil
 	}
 
-	// No pending review, create one
-	return c.startReview(ctx, prNodeID, commitOID)
+	return nil, false, nil
 }
 
-// startReview creates a new pending review and returns its ID.
-func (c *GitHubClient) startReview(ctx context.Context, prNodeID, commitOID string) (githubv4.ID, error) {
+// deletePendingReview deletes a pending review.
+func (c *GitHubClient) deletePendingReview(ctx context.Context, reviewID githubv4.ID) error {
+	var mutation struct {
+		DeletePullRequestReview struct {
+			PullRequestReview struct {
+				ID githubv4.ID
+			}
+		} `graphql:"deletePullRequestReview(input: $input)"`
+	}
+
+	input := githubv4.DeletePullRequestReviewInput{
+		PullRequestReviewID: reviewID,
+	}
+
+	return c.client.Mutate(ctx, &mutation, input, nil)
+}
+
+// startReviewWithThreads creates a new pending review with threads and returns its ID.
+// This works around a GitHub bug where adding threads to an existing review fails silently.
+func (c *GitHubClient) startReviewWithThreads(ctx context.Context, prNodeID, commitOID string, threads []NewThreadInfo) (githubv4.ID, error) {
 	var mutation struct {
 		AddPullRequestReview struct {
 			PullRequestReview struct {
@@ -218,6 +190,27 @@ func (c *GitHubClient) startReview(ctx context.Context, prNodeID, commitOID stri
 	input := githubv4.AddPullRequestReviewInput{
 		PullRequestID: &prID,
 		CommitOID:     &commit,
+	}
+
+	// Add threads if provided
+	if len(threads) > 0 {
+		draftThreads := make([]*githubv4.DraftPullRequestReviewThread, len(threads))
+		for i, t := range threads {
+			line := githubv4.Int(t.Line)
+			side := githubv4.DiffSide(t.Side)
+			dt := &githubv4.DraftPullRequestReviewThread{
+				Path: githubv4.String(t.Path),
+				Line: line,
+				Body: githubv4.String(t.Body),
+				Side: &side,
+			}
+			if t.StartLine != nil {
+				startLine := githubv4.Int(*t.StartLine)
+				dt.StartLine = &startLine
+			}
+			draftThreads[i] = dt
+		}
+		input.Threads = &draftThreads
 	}
 
 	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {

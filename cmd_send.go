@@ -24,15 +24,17 @@ Examples:
 }
 
 var (
-	flagSendDryRun         bool
-	flagSendApprove        bool
-	flagSendRequestChanges bool
+	flagSendDryRun               bool
+	flagSendApprove              bool
+	flagSendRequestChanges       bool
+	flagSendDiscardPendingReview bool
 )
 
 func init() {
 	sendCmd.Flags().BoolVar(&flagSendDryRun, "dry-run", false, "Print what would be sent without sending")
 	sendCmd.Flags().BoolVar(&flagSendApprove, "approve", false, "Submit review as approval")
 	sendCmd.Flags().BoolVar(&flagSendRequestChanges, "request-changes", false, "Submit review requesting changes")
+	sendCmd.Flags().BoolVar(&flagSendDiscardPendingReview, "discard-pending-review", false, "Discard existing pending review if one exists (required when adding new threads)")
 	sendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes")
 }
 
@@ -138,7 +140,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	fmt.Println("ok")
 
 	// Send the review
-	if err := review.Send(ctx, client, pr.ID, pr.HeadRefOID); err != nil {
+	if err := review.Send(ctx, client, pr.ID, pr.HeadRefOID, flagSendDiscardPendingReview); err != nil {
 		return err
 	}
 
