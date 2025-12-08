@@ -8,9 +8,10 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "craft",
-	Short: "Code review tool for GitHub PRs",
-	Long:  `craft is a tool for doing GitHub code review locally with PR comments embedded in source files.`,
+	Use:          "craft",
+	Short:        "Code review tool for GitHub PRs",
+	Long:         `craft is a tool for doing GitHub code review locally with PR comments embedded in source files.`,
+	SilenceUsage: true,
 }
 
 func main() {
