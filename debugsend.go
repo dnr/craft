@@ -134,11 +134,7 @@ func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, rev
 		input.SubjectType = &st
 	}
 
-	vars := map[string]interface{}{
-		"input": input,
-	}
-
-	if err := c.client.Mutate(ctx, &mutation, input, vars); err != nil {
+	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
 		return "", fmt.Errorf("addPullRequestReviewThread mutation failed: %w", err)
 	}
 
@@ -146,7 +142,7 @@ func (c *GitHubClient) addReviewThread(ctx context.Context, prNodeID string, rev
 		return "", fmt.Errorf("addPullRequestReviewThread returned nil thread ID")
 	}
 
-	return string(mutation.AddPullRequestReviewThread.Thread.ID.(string)), nil
+	return mutation.AddPullRequestReviewThread.Thread.ID.(string), nil
 }
 
 // addReviewComment adds a reply comment to a pending review.
@@ -168,11 +164,7 @@ func (c *GitHubClient) addReviewComment(ctx context.Context, reviewID githubv4.I
 		InReplyTo:           &replyToID,
 	}
 
-	vars := map[string]interface{}{
-		"input": input,
-	}
-
-	if err := c.client.Mutate(ctx, &mutation, input, vars); err != nil {
+	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
 		return "", fmt.Errorf("addPullRequestReviewComment mutation failed: %w", err)
 	}
 
@@ -228,11 +220,7 @@ func (c *GitHubClient) startReview(ctx context.Context, prNodeID, commitOID stri
 		CommitOID:     &commit,
 	}
 
-	vars := map[string]interface{}{
-		"input": input,
-	}
-
-	if err := c.client.Mutate(ctx, &mutation, input, vars); err != nil {
+	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
 		return nil, err
 	}
 
@@ -262,9 +250,5 @@ func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID, e
 		input.Body = &bodyVal
 	}
 
-	vars := map[string]interface{}{
-		"input": input,
-	}
-
-	return c.client.Mutate(ctx, &mutation, input, vars)
+	return c.client.Mutate(ctx, &mutation, input, nil)
 }
