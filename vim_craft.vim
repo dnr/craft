@@ -58,6 +58,8 @@ function! craft#SetupComments()
   if len(l:new_parts) > 0
     let &l:comments = join(l:new_parts, ',') . ',' . &comments
   endif
+  " These make writing comments much easier:
+  setlocal formatoptions+=crqj
 endfunction
 
 " Find the end of a craft comment chain (last consecutive craft line)
