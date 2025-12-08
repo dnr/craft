@@ -37,13 +37,19 @@ func CollectNewComments(pr *PullRequest) (*ReviewToSend, error) {
 	}
 
 	for _, thread := range pr.ReviewThreads {
-		// Check if this is a new thread (no ID)
-		if thread.ID == "" {
-			if len(thread.Comments) == 0 {
-				continue
-			}
-			c := thread.Comments[0]
-			if !c.IsNew {
+		if len(thread.Comments) == 0 {
+			continue
+		}
+
+		// Check if this is a new thread by looking at the first comment's ID.
+		// Thread IDs (PRRT) aren't round-tripped through serialization, but
+		// comment IDs (PRRC) are, so we use the first comment's ID to distinguish
+		// new threads from existing ones.
+		firstComment := thread.Comments[0]
+		isNewThread := firstComment.ID == ""
+
+		if isNewThread {
+			if !firstComment.IsNew {
 				continue
 			}
 			review.NewThreads = append(review.NewThreads, NewThreadInfo{
@@ -52,7 +58,7 @@ func CollectNewComments(pr *PullRequest) (*ReviewToSend, error) {
 				StartLine: thread.StartLine,
 				Side:      thread.DiffSide,
 				Subject:   thread.SubjectType,
-				Body:      c.Body,
+				Body:      firstComment.Body,
 			})
 		} else {
 			// Existing thread - look for new replies
@@ -60,15 +66,11 @@ func CollectNewComments(pr *PullRequest) (*ReviewToSend, error) {
 				if !c.IsNew {
 					continue
 				}
-				// Reply to first comment in thread
-				if len(thread.Comments) == 0 || thread.Comments[0].ID == "" {
-					return nil, fmt.Errorf("cannot find comment to reply to in thread %s:%d", thread.Path, thread.Line)
-				}
 				review.Replies = append(review.Replies, ReplyInfo{
 					ThreadPath:    thread.Path,
 					ThreadLine:    thread.Line,
 					Body:          c.Body,
-					ReplyToNodeID: thread.Comments[0].ID,
+					ReplyToNodeID: firstComment.ID,
 				})
 			}
 		}
