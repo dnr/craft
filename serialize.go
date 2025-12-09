@@ -519,12 +519,15 @@ func serializePRState(pr *PullRequest, fsys fs.FS) error {
 	metaFields := []string{
 		"pr",
 		fmt.Sprintf("number %d", pr.Number),
-		formatNodeID(pr.ID),
-		"head " + pr.HeadRefOID,
 	}
 	if pr.Author.Login != "" {
 		metaFields = append(metaFields, "@"+pr.Author.Login)
 	}
+	metaFields = append(metaFields,
+		formatNodeID(pr.ID),
+		"head "+pr.HeadRefOID,
+		"base "+pr.BaseRefOID,
+	)
 	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + "\n")
 
 	// PR description body (informational only, ignored on deserialize)
@@ -665,6 +668,9 @@ func deserializePRState(pr *PullRequest, content string) error {
 			}
 			if match := regexp.MustCompile(`head ([a-f0-9]+)`).FindStringSubmatch(trimmed); match != nil {
 				pr.HeadRefOID = match[1]
+			}
+			if match := regexp.MustCompile(`base ([a-f0-9]+)`).FindStringSubmatch(trimmed); match != nil {
+				pr.BaseRefOID = match[1]
 			}
 			continue
 		}

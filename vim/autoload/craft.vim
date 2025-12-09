@@ -1,13 +1,17 @@
-" Craft code review vim integration
-" Copy/link this file to your .vim/autoload/craft.vim
-" Add these to .vimrc:
-"nnoremap <leader>C :call craft#Comment()<CR>
-"vnoremap <leader>C :call craft#Comment()<CR>
+" Craft code review - autoload functions
+" Part of the craft vim plugin
 
 " Box drawing characters for craft comments
 let s:box_thread = '╓'  " Start of new thread (header)
 let s:box_reply = '╟'   " Reply within thread (header)
 let s:box_body = '║'    " Body line
+
+" Base commit for diffs (synced with gitgutter)
+let g:craft_base = ''
+
+" ============================================================================
+" Comment creation
+" ============================================================================
 
 " Extract comment prefix from &commentstring (e.g., '// %s' -> '//')
 function! craft#Prefix()
@@ -107,3 +111,57 @@ function! craft#Comment() range
   startinsert!
 endfunction
 
+" ============================================================================
+" Base commit management for code review
+" ============================================================================
+
+" Set the base commit for diffs
+" If no argument given, gets it from 'craft base'
+function! craft#SetBase(base)
+  if a:base != ''
+    let g:craft_base = a:base
+  else
+    let l:base = trim(system('craft base'))
+    if v:shell_error != 0
+      echohl ErrorMsg
+      echo 'craft base failed: ' . l:base
+      echohl None
+      return 0
+    endif
+    let g:craft_base = l:base
+  endif
+
+  " Sync with gitgutter
+  let g:gitgutter_diff_base = g:craft_base
+  if exists(':GitGutterAll')
+    GitGutterAll
+  endif
+
+  echo 'Base: ' . g:craft_base
+  return 1
+endfunction
+
+" Ensure base is set, auto-initialize if needed
+" Returns 1 if base is available, 0 if failed
+function! craft#EnsureBase()
+  if g:craft_base != ''
+    return 1
+  endif
+  return craft#SetBase('')
+endfunction
+
+" Run difftool against base
+function! craft#Difftool()
+  if !craft#EnsureBase()
+    return
+  endif
+  execute 'G difftool ' . g:craft_base
+endfunction
+
+" Run diffsplit against base
+function! craft#Diffsplit()
+  if !craft#EnsureBase()
+    return
+  endif
+  execute 'Gdiffsplit ' . g:craft_base
+endfunction
