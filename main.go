@@ -24,6 +24,8 @@ func main() {
 func init() {
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(sendCmd)
+	rootCmd.AddCommand(wrapCmd)
+	rootCmd.AddCommand(unwrapCmd)
 	rootCmd.AddCommand(debugFetchCmd)
 	rootCmd.AddCommand(debugCommentCmd)
 	rootCmd.AddCommand(debugSendCmd)
