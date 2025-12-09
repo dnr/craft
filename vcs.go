@@ -192,7 +192,17 @@ func (j *JJRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
 	}
 
 	// Create a new change at the commit
-	return j.runNoOutput("new", commitOID)
+	if err := j.runNoOutput("new", commitOID); err != nil {
+		return err
+	}
+
+	// Clean up old craft changes from previous get/send cycles
+	abandonRevset := fmt.Sprintf(
+		`bookmarks("%s"):: & mutable() & mine() & description(glob:"craft:*") ~ ::@`,
+		bookmarkName)
+	j.run("abandon", "-r", abandonRevset) // ignore errors - revset might match nothing
+
+	return nil
 }
 
 func (j *JJRepo) Commit(message string) error {
