@@ -192,7 +192,7 @@ func (j *JJRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
 	}
 
 	// Create a new change at the commit
-	if err := j.runNoOutput("new", commitOID); err != nil {
+	if err := j.runNoOutput("new", "-m", "craft: pending review", commitOID); err != nil {
 		return err
 	}
 
