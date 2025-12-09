@@ -28,6 +28,7 @@ var (
 	flagSendApprove              bool
 	flagSendRequestChanges       bool
 	flagSendDiscardPendingReview bool
+	flagSendPending              bool
 )
 
 func init() {
@@ -35,7 +36,8 @@ func init() {
 	sendCmd.Flags().BoolVar(&flagSendApprove, "approve", false, "Submit review as approval")
 	sendCmd.Flags().BoolVar(&flagSendRequestChanges, "request-changes", false, "Submit review requesting changes")
 	sendCmd.Flags().BoolVar(&flagSendDiscardPendingReview, "discard-pending-review", false, "Discard existing pending review if one exists (required when adding new threads)")
-	sendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes")
+	sendCmd.Flags().BoolVar(&flagSendPending, "pending", false, "Leave review in pending state (don't submit)")
+	sendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes", "pending")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
@@ -84,6 +86,8 @@ func runSend(cmd *cobra.Command, args []string) error {
 		review.ReviewEvent = "APPROVE"
 	} else if flagSendRequestChanges {
 		review.ReviewEvent = "REQUEST_CHANGES"
+	} else if flagSendPending {
+		review.ReviewEvent = "PENDING"
 	}
 
 	if review.IsEmpty() && review.ReviewEvent != "APPROVE" {
@@ -167,6 +171,10 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("done")
 
-	fmt.Println("\nReview sent successfully!")
+	if review.ReviewEvent == "PENDING" {
+		fmt.Println("\nReview left in pending state")
+	} else {
+		fmt.Println("\nReview sent successfully!")
+	}
 	return nil
 }

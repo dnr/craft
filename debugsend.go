@@ -29,6 +29,7 @@ var (
 	flagDebugSendDryRun               bool
 	flagDebugSendApprove              bool
 	flagDebugSendRequestChanges       bool
+	flagDebugSendPending              bool
 	flagDebugSendDiscardPendingReview bool
 )
 
@@ -39,8 +40,9 @@ func init() {
 	debugSendCmd.Flags().BoolVar(&flagDebugSendDryRun, "dry-run", false, "Print what would be sent without sending")
 	debugSendCmd.Flags().BoolVar(&flagDebugSendApprove, "approve", false, "Submit review as approval")
 	debugSendCmd.Flags().BoolVar(&flagDebugSendRequestChanges, "request-changes", false, "Submit review requesting changes")
+	debugSendCmd.Flags().BoolVar(&flagDebugSendPending, "pending", false, "Leave review in pending state (don't submit)")
 	debugSendCmd.Flags().BoolVar(&flagDebugSendDiscardPendingReview, "discard-pending-review", false, "Discard existing pending review if one exists")
-	debugSendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes")
+	debugSendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes", "pending")
 
 	debugSendCmd.MarkFlagRequired("input")
 	debugSendCmd.MarkFlagRequired("owner")
@@ -75,6 +77,8 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 		review.ReviewEvent = "APPROVE"
 	} else if flagDebugSendRequestChanges {
 		review.ReviewEvent = "REQUEST_CHANGES"
+	} else if flagDebugSendPending {
+		review.ReviewEvent = "PENDING"
 	}
 
 	fmt.Printf("Found %s\n", review.Summary())
@@ -96,7 +100,11 @@ func runDebugSend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Println("\nAll comments sent successfully!")
+	if review.ReviewEvent == "PENDING" {
+		fmt.Println("\nReview left in pending state")
+	} else {
+		fmt.Println("\nAll comments sent successfully!")
+	}
 	return nil
 }
 

@@ -10,7 +10,7 @@ type ReviewToSend struct {
 	NewThreads  []NewThreadInfo
 	Replies     []ReplyInfo
 	Body        string // PR-level comment (at most one)
-	ReviewEvent string // COMMENT, APPROVE, or REQUEST_CHANGES
+	ReviewEvent string // COMMENT, APPROVE, REQUEST_CHANGES, or PENDING (not a real event)
 }
 
 type NewThreadInfo struct {
@@ -122,6 +122,7 @@ var ErrPendingReviewExists = fmt.Errorf("pending review exists")
 // Send sends the review to GitHub.
 // If discardPendingReview is true and there's an existing pending review with new threads
 // to add, the existing review will be discarded.
+// If ReviewEvent is "PENDING", the review will not be submitted (left in pending state).
 func (r *ReviewToSend) Send(ctx context.Context, client *GitHubClient, prNodeID, headRefOID string, discardPendingReview bool) error {
 	var reviewID interface{}
 	var err error
@@ -175,12 +176,14 @@ func (r *ReviewToSend) Send(ctx context.Context, client *GitHubClient, prNodeID,
 		fmt.Println("done")
 	}
 
-	// Submit the review
-	fmt.Printf("Submitting review (%s)... ", r.ReviewEvent)
-	if err := client.submitReview(ctx, reviewID, r.ReviewEvent, r.Body); err != nil {
-		return fmt.Errorf("submitting review: %w", err)
+	// Submit the review (unless PENDING)
+	if r.ReviewEvent != "PENDING" {
+		fmt.Printf("Submitting review (%s)... ", r.ReviewEvent)
+		if err := client.submitReview(ctx, reviewID, r.ReviewEvent, r.Body); err != nil {
+			return fmt.Errorf("submitting review: %w", err)
+		}
+		fmt.Println("done")
 	}
-	fmt.Println("done")
 
 	return nil
 }
