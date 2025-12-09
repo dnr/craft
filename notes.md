@@ -61,10 +61,11 @@
   - **Comment format**:
     - All craft data is embedded in code comments
     - Use only line comments to keep things simple for now
-    - All craft data has an additional prefix after the line comment marker
-    - Use `❯` as a prefix, e.g. `// ❯ content goes here` for Go code
-      - Still valid language comments, but easy to distinguish and avoids misinterpretation
-    - Content is organized as a series of records
+    - Uses box drawing characters as prefixes after the line comment marker:
+      - `╓` = start of new thread (header line)
+      - `╟` = reply within thread (header line)
+      - `║` = body line
+    - Content is organized as a series of records (threads)
     - Each record starts with a header, and ends at the next header or first line that isn't craft data
     - As in the GitHub UI, review comments appear right _below_ the line they apply to
     - See "Comment Header Format" below for the header format
@@ -111,15 +112,50 @@
 
 - **Comment Header Format**:
   - Light structured format with key/value fields
-  - The following describes text after stripping the code comment character and `❯` prefix
-  - Format: `───── field1 ─ field2 ─ ... ─────`
+  - The following describes text after stripping the code comment character and box prefix
+  - Format: `───── field1 ─ field2 ─ ...` (no trailing dashes)
   - Field format: `key [value]`
-  - Fields: `by author`, `at YYYY-MM-DD HH:MM`, `id 12345`, `parent 67890`, `range -N`, `file`, `new`
-  - Boolean fields (`file`, `new`) can omit value (assume `true`)
-  - Examples:
-    - Line comment header: `───── by alice ─ at 2025-01-01 12:34 ─ id 543216 ─────`
-    - File-level: `───── by bob ─ at 2025-01-01 12:34 ─ file ─ id 543216 ─────`
-    - Range comment: `───── by carol ─ at 2025-01-01 12:34 ─ range -12 ─ id 543216 ─────`
-    - Reply: `───── by dave ─ at 2025-01-01 12:34 ─ id 543216 ─ parent 284834 ─────`
-    - New comment: `───── new ─────`
+  - Fields: `@author`, `at YYYY-MM-DD HH:MM`, `prrc <nodeID>`, `range -N`, `file`, `new`, `outdated`, `resolved`, `origline N`
+  - Boolean fields (`file`, `new`, `outdated`, `resolved`) have no value
+  - Node ID is formatted as lowercase type + space + suffix (e.g., `PRRC_kwDOxxx` → `prrc kwDOxxx`)
+  - Examples (after stripping comment prefix and box char):
+    - Line comment: `───── @alice ─ at 2025-01-01 12:34 ─ prrc kwDOPgi5ks6ZBMOo`
+    - File-level: `───── @bob ─ at 2025-01-01 12:34 ─ file ─ prrc kwDOPgi5ks6ZBMOo`
+    - Range comment: `───── @carol ─ at 2025-01-01 12:34 ─ range -12 ─ prrc kwDOPgi5ks6ZBMOo`
+    - Outdated: `───── @dave ─ at 2025-01-01 12:34 ─ outdated ─ origline 42 ─ prrc kwDOPgi5ks6ZBMOo`
+    - New comment: `───── new`
+
+- **Version Control Support** (see `vcs.go`):
+  - Supports both **git** and **jj (Jujutsu)**
+  - `DetectVCS()` checks for `.jj` directory first (jj can colocate with git)
+  - `VCS` interface abstracts operations: checkout, commit, diff, branch info, config
+  - JJ-specific handling:
+    - Ignores non `pr-` bookmarks when looking for the current branch
+    - Creates new change with "craft: pending review" message
+    - Automatically abandons old craft cruft changes
+    - Handles that jj never has "uncommitted changes" in the git sense
+
+- **Send command** (`craft send`):
+  - `--pending` flag: Leave review in pending state (don't submit)
+  - `--approve`, `--request-changes`: Submit with review action
+  - `--discard-pending-review`: Required when adding new threads with an existing pending review
+  - New threads are created in the same mutation as the review for efficiency
+
+- **Comment handling**:
+  - **Range comments**: Support `range -N` for multi-line comments
+  - **Outdated comments**: Better handling with nicer formatting
+  - **Deleted files / left comments**: Comments on the "left" side of diffs are handled
+  - **Binary files**: Skipped during serialization
+  - **Submodules**: Skipped during serialization
+
+- **Markdown formatting**:
+  - Comment bodies are wrapped and indented properly
+  - Uses `mdwrap.go` for markdown-aware text wrapping
+  - PR description is now displayed
+
+- **Vim integration** (`vim_craft.vim`):
+  - Uses autoload for cleaner loading
+  - Sets `formatoptions` for proper comment editing (auto-wrapping, etc.)
+  - Sets `comments` option correctly for gq/wrapping
+  - Auto-indents new comments
 
