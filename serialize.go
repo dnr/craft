@@ -142,6 +142,9 @@ func formatCraftLine(linePrefix, boxChar, content string) string {
 	if strings.HasPrefix(content, "─") {
 		return linePrefix + " " + boxChar + content
 	}
+	if content == "" {
+		return linePrefix + " " + boxChar
+	}
 	return linePrefix + " " + boxChar + " " + content
 }
 
@@ -526,8 +529,10 @@ func serializePRState(pr *PullRequest, fsys fs.FS) error {
 	metaFields = append(metaFields,
 		formatNodeID(pr.ID),
 		"head "+pr.HeadRefOID,
-		"base "+pr.BaseRefOID,
 	)
+	if pr.BaseRefOID != "" {
+		metaFields = append(metaFields, "base "+pr.BaseRefOID)
+	}
 	buf.WriteString(headerStart + " " + strings.Join(metaFields, headerFieldSep) + "\n")
 
 	// PR description body (informational only, ignored on deserialize)
