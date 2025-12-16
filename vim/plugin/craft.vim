@@ -15,6 +15,8 @@ command! Csplit call craft#Diffsplit()
 if !exists('g:craft_no_mappings')
   nnoremap <leader>C :call craft#Comment()<CR>
   vnoremap <leader>C :call craft#Comment()<CR>
+  nnoremap <leader>S :call craft#Suggestion()<CR>
+  vnoremap <leader>S :call craft#Suggestion()<CR>
   nnoremap <leader>D :call craft#Diffsplit()<CR>
 endif
 

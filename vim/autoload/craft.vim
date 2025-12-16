@@ -118,6 +118,43 @@ function! craft#Comment() range
   startinsert!
 endfunction
 
+" Create a suggestion comment with the current line or visual selection
+" in a ```suggestion block, ready for editing
+function! craft#Suggestion() range
+  let l:prefix = craft#Prefix()
+  let l:indent = craft#GetIndent(a:firstline)
+
+  " Get the selected lines
+  let l:lines = getline(a:firstline, a:lastline)
+
+  " Build the comment
+  let l:result = []
+  if a:firstline != a:lastline
+    let l:range_size = a:firstline - a:lastline
+    call add(l:result, l:indent . l:prefix . ' ' . s:box_thread . '───── new ─ range ' . l:range_size)
+  else
+    call add(l:result, l:indent . l:prefix . ' ' . s:box_thread . '───── new')
+  endif
+  call add(l:result, l:indent . l:prefix . ' ' . s:box_body . ' ```suggestion')
+
+  " Add the copied lines (preserving their exact content)
+  let l:first_content_line = len(l:result) + 1
+  for l:line in l:lines
+    call add(l:result, l:indent . l:prefix . ' ' . s:box_body . ' ' . l:line)
+  endfor
+
+  call add(l:result, l:indent . l:prefix . ' ' . s:box_body . ' ```')
+
+  " Insert after the last line of the selection
+  call append(a:lastline, l:result)
+
+  " Position cursor at start of first copied line content
+  let l:cursor_line = a:lastline + l:first_content_line
+  let l:body_prefix = l:indent . l:prefix . ' ' . s:box_body . ' '
+  call cursor(l:cursor_line, len(l:body_prefix) + 1)
+  call craft#SetupComments()
+endfunction
+
 " Simpler comment creation for PR-STATE.txt
 " No box chars, no threading - just top-level comments with plain text body
 function! craft#PRStateComment()
