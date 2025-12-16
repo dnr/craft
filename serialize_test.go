@@ -441,6 +441,39 @@ func TestPRStateAuthorAndBody(t *testing.T) {
 	assert.Equal(t, "LGTM!", pr2.IssueComments[0].Body)
 }
 
+func TestNewPRLevelComment(t *testing.T) {
+	// Test that new PR-level comments (───── new) are detected in PR-STATE.txt
+	prState := `───── pr ─ number 42 ─ pr kwDOPgi5ks6k-agY ─ head abc123
+
+───── @alice ─ at 2025-01-15 12:00 ─ ic kwDOPgi5ks1234567
+Existing comment from alice
+
+───── new
+This is a new PR-level comment
+with multiple lines
+`
+
+	memfs := fstest.MapFS{
+		prStateFile: &fstest.MapFile{Data: []byte(prState)},
+	}
+
+	opts := SerializeOptions{FS: memfs}
+	pr, err := Deserialize(opts)
+	require.NoError(t, err)
+
+	// Should have 2 issue comments
+	require.Len(t, pr.IssueComments, 2)
+
+	// First comment is existing (not new)
+	assert.False(t, pr.IssueComments[0].IsNew)
+	assert.Equal(t, "alice", pr.IssueComments[0].Author.Login)
+	assert.Equal(t, "Existing comment from alice", pr.IssueComments[0].Body)
+
+	// Second comment is new (soft line breaks are unwrapped)
+	assert.True(t, pr.IssueComments[1].IsNew)
+	assert.Equal(t, "This is a new PR-level comment with multiple lines", pr.IssueComments[1].Body)
+}
+
 func TestOutdatedResolvedHeaders(t *testing.T) {
 	tests := []struct {
 		name   string
