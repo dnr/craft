@@ -84,6 +84,12 @@ endfunction
 
 " Main function: reply if in chain, otherwise new comment
 function! craft#Comment() range
+  " PR-STATE.txt has a simpler format: no box chars, no threading
+  if expand('%:t') ==# 'PR-STATE.txt'
+    call craft#PRStateComment()
+    return
+  endif
+
   let l:prefix = craft#Prefix()
 
   " Check if we're in a craft comment chain
@@ -110,6 +116,17 @@ function! craft#Comment() range
   call cursor(l:insert_after + 2, len(l:body) + 1)
   call craft#SetupComments()
   startinsert!
+endfunction
+
+" Simpler comment creation for PR-STATE.txt
+" No box chars, no threading - just top-level comments with plain text body
+function! craft#PRStateComment()
+  let l:insert_after = line('.')
+  let l:header = '───── new'
+  let l:body = ''
+  call append(l:insert_after, [l:header, l:body])
+  call cursor(l:insert_after + 2, 1)
+  startinsert
 endfunction
 
 " ============================================================================
