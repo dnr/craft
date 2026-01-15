@@ -62,8 +62,7 @@ const (
 type Hunk struct {
 	OldStart, OldCount int      // Line range in old file
 	NewStart, NewCount int      // Line range in new file
-	OldLines           []string // Lines removed (without - prefix)
-	NewLines           []string // Lines added (without + prefix)
+	OldLines, NewLines []string // Lines removed/added (without -/+ prefix)
 
 	Classification HunkClassification // Set by classifyHunk
 }
@@ -155,7 +154,7 @@ type processResult struct {
 
 // transformResult holds the output of transformFileWithSuggestions.
 type transformResult struct {
-	Content  string   // Transformed file content
+	Content  string // Transformed file content
 	Stats    processResult
 	Warnings []string // Warning messages for pure additions etc.
 }
@@ -176,10 +175,8 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 	style := getCommentStyle(path)
 
 	// Classify each hunk
-	for i := range hunks {
-		classifyHunk(&hunks[i], style)
-
-		switch hunks[i].Classification {
+	for _, hunk := range hunks {
+		switch classifyHunk(hunk, style) {
 		case HunkCraftComment:
 			result.Stats.craftComments++ // Preserved existing craft comment
 		case HunkSuggestion:
@@ -189,11 +186,11 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 		case HunkWarnPureAdd:
 			result.Stats.warnings++
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("%s:%d: pure code addition, skipping", path, hunks[i].NewStart))
+				fmt.Sprintf("%s:%d: pure code addition, skipping", path, hunk.NewStart))
 		case HunkWarnMixed:
 			result.Stats.warnings++
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("%s:%d: craft comments mixed with code changes, skipping (use ,S to add comments to suggestions)", path, hunks[i].NewStart))
+				fmt.Sprintf("%s:%d: craft comments mixed with code changes, skipping (use ,S to add comments to suggestions)", path, hunk.NewStart))
 		}
 	}
 
@@ -211,8 +208,7 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 	resultLines := make([]string, len(originalLines))
 	copy(resultLines, originalLines)
 
-	for i := range hunks {
-		hunk := &hunks[i]
+	for _, hunk := range hunks {
 		if hunk.Classification == HunkWarnPureAdd || hunk.Classification == HunkWarnMixed {
 			continue
 		}
@@ -315,7 +311,7 @@ func processFileForSuggestions(vcs VCS, root, headCommit, path string, dryRun bo
 }
 
 // getFileHunks returns parsed diff hunks for a file.
-func getFileHunks(vcs VCS, commit, path string) ([]Hunk, error) {
+func getFileHunks(vcs VCS, commit, path string) ([]*Hunk, error) {
 	diffOutput, err := vcs.GetFileDiff(commit, path)
 	if err != nil {
 		return nil, err
@@ -347,18 +343,16 @@ func CheckForNonCraftChanges(vcs VCS, headCommit string) error {
 
 		style := getCommentStyle(path)
 
-		for i := range hunks {
-			classifyHunk(&hunks[i], style)
-
-			switch hunks[i].Classification {
+		for _, hunk := range hunks {
+			switch classifyHunk(hunk, style) {
 			case HunkSuggestion:
-				problems = append(problems, fmt.Sprintf("%s:%d: code change not converted to suggestion", path, hunks[i].NewStart))
+				problems = append(problems, fmt.Sprintf("%s:%d: code change not converted to suggestion", path, hunk.NewStart))
 			case HunkCodeComment:
-				problems = append(problems, fmt.Sprintf("%s:%d: code comment not converted to craft comment", path, hunks[i].NewStart))
+				problems = append(problems, fmt.Sprintf("%s:%d: code comment not converted to craft comment", path, hunk.NewStart))
 			case HunkWarnPureAdd:
-				problems = append(problems, fmt.Sprintf("%s:%d: pure code addition", path, hunks[i].NewStart))
+				problems = append(problems, fmt.Sprintf("%s:%d: pure code addition", path, hunk.NewStart))
 			case HunkWarnMixed:
-				problems = append(problems, fmt.Sprintf("%s:%d: craft comments mixed with code changes", path, hunks[i].NewStart))
+				problems = append(problems, fmt.Sprintf("%s:%d: craft comments mixed with code changes", path, hunk.NewStart))
 			}
 		}
 	}
@@ -371,9 +365,7 @@ func CheckForNonCraftChanges(vcs VCS, headCommit string) error {
 }
 
 // parseUnifiedDiff parses unified diff output into hunks.
-func parseUnifiedDiff(diff string) []Hunk {
-	var hunks []Hunk
-
+func parseUnifiedDiff(diff string) (hunks []*Hunk) {
 	// Regex to match hunk headers: @@ -oldStart,oldCount +newStart,newCount @@
 	hunkHeaderRe := regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
@@ -384,7 +376,7 @@ func parseUnifiedDiff(diff string) []Hunk {
 		if matches := hunkHeaderRe.FindStringSubmatch(line); matches != nil {
 			// Save previous hunk
 			if currentHunk != nil {
-				hunks = append(hunks, *currentHunk)
+				hunks = append(hunks, currentHunk)
 			}
 
 			// Parse hunk header
@@ -425,14 +417,15 @@ func parseUnifiedDiff(diff string) []Hunk {
 
 	// Don't forget the last hunk
 	if currentHunk != nil {
-		hunks = append(hunks, *currentHunk)
+		hunks = append(hunks, currentHunk)
 	}
-
-	return hunks
+	return
 }
 
 // classifyHunk determines what to do with a hunk and sets hunk.Classification.
-func classifyHunk(hunk *Hunk, style commentStyle) {
+func classifyHunk(hunk *Hunk, style commentStyle) (classification HunkClassification) {
+	defer func() { hunk.Classification = classification }()
+
 	// Filter out craft comment lines from new lines
 	var filteredNewLines []string
 	for _, line := range hunk.NewLines {
@@ -445,19 +438,16 @@ func classifyHunk(hunk *Hunk, style commentStyle) {
 
 	// If all new lines were craft comments and no deletions, preserve as-is
 	if len(filteredNewLines) == 0 && len(hunk.OldLines) == 0 {
-		hunk.Classification = HunkCraftComment
-		return
+		return HunkCraftComment
 	}
 
 	// If there are deletions, this is a code change -> suggestion
 	if len(hunk.OldLines) > 0 {
 		// But if there are also craft comments mixed in, warn
 		if hasCraftComments {
-			hunk.Classification = HunkWarnMixed
-			return
+			return HunkWarnMixed
 		}
-		hunk.Classification = HunkSuggestion
-		return
+		return HunkSuggestion
 	}
 
 	// Pure additions - check if they're all code comments
@@ -470,12 +460,11 @@ func classifyHunk(hunk *Hunk, style commentStyle) {
 	}
 
 	if allCodeComments && len(filteredNewLines) > 0 {
-		hunk.Classification = HunkCodeComment
-		return
+		return HunkCodeComment
 	}
 
 	// Pure code addition - warn and skip
-	hunk.Classification = HunkWarnPureAdd
+	return HunkWarnPureAdd
 }
 
 // isCraftCommentLine checks if a line contains craft box characters.
