@@ -51,10 +51,11 @@ func init() {
 type HunkClassification int
 
 const (
-	HunkSkip        HunkClassification = iota // Already craft comment, skip
-	HunkSuggestion                            // Code change -> suggestion
-	HunkCodeComment                           // Added code comment -> craft comment
-	HunkWarnPureAdd                           // Pure addition, warn and skip
+	HunkCraftComment HunkClassification = iota // Already craft comment, preserve as-is
+	HunkSuggestion                             // Code change -> suggestion
+	HunkCodeComment                            // Added code comment -> craft comment
+	HunkWarnPureAdd                            // Pure code addition, warn and skip
+	HunkWarnMixed                              // Mixed craft comments and code changes, warn and skip
 )
 
 // Hunk represents a parsed diff hunk.
@@ -179,6 +180,8 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 		classifyHunk(&hunks[i], style)
 
 		switch hunks[i].Classification {
+		case HunkCraftComment:
+			result.Stats.craftComments++ // Preserved existing craft comment
 		case HunkSuggestion:
 			result.Stats.suggestions++
 		case HunkCodeComment:
@@ -187,6 +190,10 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 			result.Stats.warnings++
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("%s:%d: pure code addition, skipping", path, hunks[i].NewStart))
+		case HunkWarnMixed:
+			result.Stats.warnings++
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s:%d: craft comments mixed with code changes, skipping (use ,S to add comments to suggestions)", path, hunks[i].NewStart))
 		}
 	}
 
@@ -206,7 +213,7 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 
 	for i := range hunks {
 		hunk := &hunks[i]
-		if hunk.Classification == HunkSkip || hunk.Classification == HunkWarnPureAdd {
+		if hunk.Classification == HunkWarnPureAdd || hunk.Classification == HunkWarnMixed {
 			continue
 		}
 
@@ -221,6 +228,9 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 		var commentLines []string
 
 		switch hunk.Classification {
+		case HunkCraftComment:
+			// Preserve existing craft comments (copy them as-is)
+			commentLines = hunk.NewLines
 		case HunkSuggestion:
 			commentLines = buildSuggestionComment(style, indent, *hunk)
 		case HunkCodeComment:
@@ -229,7 +239,11 @@ func transformFileWithSuggestions(originalContent, diffOutput, path string) tran
 
 		// Insert after the hunk's old lines
 		// OldStart is 1-based, and we want to insert after the last old line
+		// For pure additions (OldCount=0), OldStart is the line after which to insert
 		insertPos := hunk.OldStart + hunk.OldCount - 1
+		if hunk.OldCount == 0 {
+			insertPos = hunk.OldStart
+		}
 		if insertPos < 0 {
 			insertPos = 0
 		}
@@ -343,6 +357,8 @@ func CheckForNonCraftChanges(vcs VCS, headCommit string) error {
 				problems = append(problems, fmt.Sprintf("%s:%d: code comment not converted to craft comment", path, hunks[i].NewStart))
 			case HunkWarnPureAdd:
 				problems = append(problems, fmt.Sprintf("%s:%d: pure code addition", path, hunks[i].NewStart))
+			case HunkWarnMixed:
+				problems = append(problems, fmt.Sprintf("%s:%d: craft comments mixed with code changes", path, hunks[i].NewStart))
 			}
 		}
 	}
@@ -425,14 +441,21 @@ func classifyHunk(hunk *Hunk, style commentStyle) {
 		}
 	}
 
-	// If all new lines were craft comments, skip this hunk
+	hasCraftComments := len(filteredNewLines) < len(hunk.NewLines)
+
+	// If all new lines were craft comments and no deletions, preserve as-is
 	if len(filteredNewLines) == 0 && len(hunk.OldLines) == 0 {
-		hunk.Classification = HunkSkip
+		hunk.Classification = HunkCraftComment
 		return
 	}
 
 	// If there are deletions, this is a code change -> suggestion
 	if len(hunk.OldLines) > 0 {
+		// But if there are also craft comments mixed in, warn
+		if hasCraftComments {
+			hunk.Classification = HunkWarnMixed
+			return
+		}
 		hunk.Classification = HunkSuggestion
 		return
 	}

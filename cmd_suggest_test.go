@@ -3,8 +3,9 @@ package main
 import (
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParseUnifiedDiff(t *testing.T) {
@@ -192,22 +193,22 @@ func TestClassifyHunk(t *testing.T) {
 			expected: HunkWarnPureAdd,
 		},
 		{
-			name: "craft comment only -> skip",
+			name: "craft comment only -> preserve",
 			hunk: Hunk{
 				OldLines: nil,
 				NewLines: []string{"// ╓───── new", "// ║ hello"},
 			},
 			style:    goStyle,
-			expected: HunkSkip,
+			expected: HunkCraftComment,
 		},
 		{
-			name: "code change with craft comment -> suggestion",
+			name: "code change with craft comment -> warn mixed",
 			hunk: Hunk{
 				OldLines: []string{"    old code"},
 				NewLines: []string{"    new code", "// ╓───── new"},
 			},
 			style:    goStyle,
-			expected: HunkSuggestion,
+			expected: HunkWarnMixed,
 		},
 	}
 
@@ -337,9 +338,9 @@ func example() {
 	// ║ ` + "```" + `suggestion
 	// ║ 	newCode := "this was changed"
 	// ║ ` + "```" + `
+	keepThis := true
 	// ╓───── new
 	// ║ This is a review comment
-	keepThis := true
 	alsoKeep := false
 }
 `
@@ -421,7 +422,17 @@ func TestTransformDeletion(t *testing.T) {
 }
 `
 
-	// Deletion becomes a suggestion with empty content
+	expected := `func foo() {
+	keep := 1
+	delete1 := 2
+	delete2 := 3
+	// ╓───── new` + headerFieldSep + `range -1
+	// ║ ` + "```" + `suggestion
+	// ║ ` + "```" + `
+	alsoKeep := 4
+}
+`
+
 	diff := generateDiff(t, before, after)
 	result := transformFileWithSuggestions(before, diff, "test.go")
 
@@ -429,14 +440,13 @@ func TestTransformDeletion(t *testing.T) {
 		t.Errorf("got %d suggestions, want 1", result.Stats.suggestions)
 	}
 
-	// The suggestion should contain an empty suggestion block
-	if !strings.Contains(result.Content, "```suggestion") {
-		t.Error("missing suggestion block")
+	if result.Content != expected {
+		t.Errorf("content mismatch.\n\nGot:\n%s\n\nWant:\n%s\n\nDiff:\n%s",
+			result.Content, expected, generateDiff(t, expected, result.Content))
 	}
 }
 
 func TestTransformPythonFile(t *testing.T) {
-	// Test that Python files use # for craft comments
 	before := `def example():
     old_code = "change me"
     return True
@@ -447,24 +457,23 @@ func TestTransformPythonFile(t *testing.T) {
     return True
 `
 
+	expected := `def example():
+    old_code = "change me"
+    # ╓───── new
+    # ║ ` + "```" + `suggestion
+    # ║     new_code = "changed"
+    # ║ ` + "```" + `
+    return True
+`
+
 	diff := generateDiff(t, before, after)
 	result := transformFileWithSuggestions(before, diff, "test.py")
 
-	// Should use # for comments in Python
-	if !strings.Contains(result.Content, "# ╓───── new") {
-		t.Error("expected Python comment style (#)")
-	}
-	if !strings.Contains(result.Content, "# ║ ```suggestion") {
-		t.Error("expected Python comment style in suggestion block")
-	}
-	if result.Stats.suggestions != 1 {
-		t.Errorf("got %d suggestions, want 1", result.Stats.suggestions)
-	}
+	assert.Equal(t, 1, result.Stats.suggestions)
+	assert.Equal(t, expected, result.Content)
 }
 
 func TestTransformCodeCommentAlone(t *testing.T) {
-	// Test that a pure code comment addition becomes a craft comment
-	// (not adjacent to any code changes)
 	before := `func foo() {
 	x := 1
 	y := 2
@@ -478,19 +487,78 @@ func TestTransformCodeCommentAlone(t *testing.T) {
 }
 `
 
+	expected := `func foo() {
+	x := 1
+	// ╓───── new
+	// ║ this is a review comment
+	y := 2
+}
+`
+
 	diff := generateDiff(t, before, after)
 	result := transformFileWithSuggestions(before, diff, "test.go")
 
-	if result.Stats.craftComments != 1 {
-		t.Errorf("got %d craft comments, want 1", result.Stats.craftComments)
-	}
-	if result.Stats.suggestions != 0 {
-		t.Errorf("got %d suggestions, want 0", result.Stats.suggestions)
-	}
-	if !strings.Contains(result.Content, "// ╓───── new") {
-		t.Error("missing craft comment header")
-	}
-	if !strings.Contains(result.Content, "// ║ this is a review comment") {
-		t.Error("missing craft comment body")
-	}
+	assert.Equal(t, 0, result.Stats.suggestions)
+	assert.Equal(t, 1, result.Stats.craftComments)
+	assert.Equal(t, expected, result.Content)
+}
+
+func TestTransformWarnsMixedCraftAndCodeChanges(t *testing.T) {
+	before := `func foo() {
+	x := 1
+	y := 2
+}
+`
+
+	// User added a craft comment adjacent to a code edit - these get combined
+	// into one hunk by diff, and we warn about it
+	after := `func foo() {
+	x := 1
+	// ╓───── new
+	// ║ existing craft comment
+	newY := 22
+}
+`
+
+	diff := generateDiff(t, before, after)
+	result := transformFileWithSuggestions(before, diff, "test.go")
+
+	// The mixed hunk should be skipped with a warning
+	assert.Equal(t, 0, result.Stats.suggestions)
+	assert.Equal(t, 1, result.Stats.warnings)
+	assert.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "craft comments mixed with code changes")
+}
+
+func TestTransformPreservesPureCraftComments(t *testing.T) {
+	before := `func foo() {
+	x := 1
+	y := 2
+}
+`
+
+	// User added a craft comment NOT adjacent to any code changes
+	after := `func foo() {
+	// ╓───── new
+	// ║ a standalone craft comment
+	x := 1
+	y := 2
+}
+`
+
+	expected := `func foo() {
+	// ╓───── new
+	// ║ a standalone craft comment
+	x := 1
+	y := 2
+}
+`
+
+	diff := generateDiff(t, before, after)
+	result := transformFileWithSuggestions(before, diff, "test.go")
+
+	assert.Equal(t, 0, result.Stats.suggestions)
+	assert.Equal(t, 1, result.Stats.craftComments) // Preserved craft comment counts
+	assert.Equal(t, 0, result.Stats.warnings)
+	assert.Equal(t, expected, result.Content)
 }
