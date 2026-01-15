@@ -38,6 +38,15 @@ type VCS interface {
 
 	// GetConfigValue returns a git/jj config value
 	GetConfigValue(key string) (string, error)
+
+	// GetModifiedFiles returns files modified between commit and HEAD/current
+	GetModifiedFiles(commit string) ([]string, error)
+
+	// GetFileDiff returns unified diff for a file between commit and HEAD/current
+	GetFileDiff(commit, path string) (string, error)
+
+	// GetFileAtCommit returns file content at a specific commit
+	GetFileAtCommit(commit, path string) (string, error)
 }
 
 // DetectVCS detects whether the current directory is a git or jj repo.
@@ -125,6 +134,25 @@ func (g *GitRepo) GetCurrentBranch() (string, error) {
 
 func (g *GitRepo) GetConfigValue(key string) (string, error) {
 	return g.run("config", "--get", key)
+}
+
+func (g *GitRepo) GetModifiedFiles(commit string) ([]string, error) {
+	out, err := g.run("diff", "--name-only", commit, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
+func (g *GitRepo) GetFileDiff(commit, path string) (string, error) {
+	return g.run("diff", "-U0", commit, "HEAD", "--", path)
+}
+
+func (g *GitRepo) GetFileAtCommit(commit, path string) (string, error) {
+	return g.run("show", commit+":"+path)
 }
 
 // JJRepo implements VCS for jj repositories.
@@ -245,6 +273,33 @@ func (j *JJRepo) GetConfigValue(key string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(gitOut)), nil
+}
+
+func (j *JJRepo) GetModifiedFiles(commit string) ([]string, error) {
+	out, err := j.run("diff", "--summary", "--from", commit, "--to", "@")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	// jj diff --summary format: "M path" or "A path" etc.
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 {
+			files = append(files, parts[1])
+		}
+	}
+	return files, nil
+}
+
+func (j *JJRepo) GetFileDiff(commit, path string) (string, error) {
+	return j.run("diff", "--git", "--context", "0", "--from", commit, "--to", "@", path)
+}
+
+func (j *JJRepo) GetFileAtCommit(commit, path string) (string, error) {
+	return j.run("file", "show", "-r", commit, path)
 }
 
 // ParseGitHubRemote extracts owner and repo from a GitHub remote URL.

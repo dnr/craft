@@ -75,6 +75,16 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("PR-STATE.txt missing PR ID; run 'craft get' first")
 	}
 
+	// Check for non-craft code changes
+	if pr.HeadRefOID != "" {
+		fmt.Print("Checking for code changes... ")
+		if err := CheckForNonCraftChanges(vcs, pr.HeadRefOID); err != nil {
+			fmt.Println("found!")
+			return err
+		}
+		fmt.Println("ok")
+	}
+
 	// Collect new comments
 	review, err := CollectNewComments(pr)
 	if err != nil {

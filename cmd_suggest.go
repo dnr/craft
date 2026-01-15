@@ -47,24 +47,25 @@ func init() {
 	rootCmd.AddCommand(suggestCmd)
 }
 
+// HunkClassification describes what to do with a hunk.
+type HunkClassification int
+
+const (
+	HunkSkip        HunkClassification = iota // Already craft comment, skip
+	HunkSuggestion                            // Code change -> suggestion
+	HunkCodeComment                           // Added code comment -> craft comment
+	HunkWarnPureAdd                           // Pure addition, warn and skip
+)
+
 // Hunk represents a parsed diff hunk.
 type Hunk struct {
 	OldStart, OldCount int      // Line range in old file
 	NewStart, NewCount int      // Line range in new file
 	OldLines           []string // Lines removed (without - prefix)
 	NewLines           []string // Lines added (without + prefix)
-	Context            []string // Context lines (for reference)
+
+	Classification HunkClassification // Set by classifyHunk
 }
-
-// HunkClassification describes what to do with a hunk.
-type HunkClassification int
-
-const (
-	HunkSkip          HunkClassification = iota // Already craft comment, skip
-	HunkSuggestion                              // Code change → suggestion
-	HunkCraftComment                            // Added code comment → craft comment
-	HunkWarnPureAdd                             // Pure addition, warn and skip
-)
 
 func runSuggest(cmd *cobra.Command, args []string) error {
 	// Detect VCS
@@ -87,7 +88,7 @@ func runSuggest(cmd *cobra.Command, args []string) error {
 	fmt.Printf("PR head: %s\n", pr.HeadRefOID[:12])
 
 	// Get list of modified files (comparing PR head to current working tree)
-	files, err := getModifiedFiles(vcs, pr.HeadRefOID)
+	files, err := vcs.GetModifiedFiles(pr.HeadRefOID)
 	if err != nil {
 		return fmt.Errorf("getting modified files: %w", err)
 	}
@@ -151,72 +152,63 @@ type processResult struct {
 	warnings      int
 }
 
-func processFileForSuggestions(vcs VCS, root, headCommit, path string, dryRun bool) (processResult, error) {
-	var result processResult
+// transformResult holds the output of transformFileWithSuggestions.
+type transformResult struct {
+	Content  string   // Transformed file content
+	Stats    processResult
+	Warnings []string // Warning messages for pure additions etc.
+}
 
-	// Get the diff for this file
-	hunks, err := getFileHunks(vcs, headCommit, path)
-	if err != nil {
-		return result, err
-	}
+// transformFileWithSuggestions is the pure transformation logic.
+// It takes original file content and diff output, returns the transformed content
+// with suggestions/comments inserted.
+func transformFileWithSuggestions(originalContent, diffOutput, path string) transformResult {
+	var result transformResult
 
+	hunks := parseUnifiedDiff(diffOutput)
 	if len(hunks) == 0 {
-		return result, nil
-	}
-
-	// Get original file content from head commit
-	originalContent, err := getFileAtCommit(vcs, headCommit, path)
-	if err != nil {
-		// File might not exist at head commit (newly added file)
-		// All changes would be pure additions, skip with warning
-		fmt.Fprintf(os.Stderr, "Warning: %s: file not in PR head, skipping (new file?)\n", path)
-		return result, nil
+		result.Content = originalContent
+		return result
 	}
 
 	originalLines := strings.Split(originalContent, "\n")
 	style := getCommentStyle(path)
 
 	// Classify each hunk
-	type classifiedHunk struct {
-		hunk           Hunk
-		classification HunkClassification
-	}
-	var classified []classifiedHunk
+	for i := range hunks {
+		classifyHunk(&hunks[i], style)
 
-	for _, hunk := range hunks {
-		class := classifyHunk(hunk, style)
-		classified = append(classified, classifiedHunk{hunk, class})
-
-		switch class {
+		switch hunks[i].Classification {
 		case HunkSuggestion:
-			result.suggestions++
-		case HunkCraftComment:
-			result.craftComments++
+			result.Stats.suggestions++
+		case HunkCodeComment:
+			result.Stats.craftComments++
 		case HunkWarnPureAdd:
-			result.warnings++
-			fmt.Fprintf(os.Stderr, "Warning: %s:%d: pure code addition, skipping\n", path, hunk.NewStart)
+			result.Stats.warnings++
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s:%d: pure code addition, skipping", path, hunks[i].NewStart))
 		}
 	}
 
-	if result.suggestions == 0 && result.craftComments == 0 {
-		return result, nil
+	if result.Stats.suggestions == 0 && result.Stats.craftComments == 0 {
+		result.Content = originalContent
+		return result
 	}
 
 	// Build new file content: original code + craft comments/suggestions
 	// Process hunks from bottom to top so line numbers stay valid
-	sort.Slice(classified, func(i, j int) bool {
-		return classified[i].hunk.OldStart > classified[j].hunk.OldStart
+	sort.Slice(hunks, func(i, j int) bool {
+		return hunks[i].OldStart > hunks[j].OldStart
 	})
 
 	resultLines := make([]string, len(originalLines))
 	copy(resultLines, originalLines)
 
-	for _, ch := range classified {
-		if ch.classification == HunkSkip || ch.classification == HunkWarnPureAdd {
+	for i := range hunks {
+		hunk := &hunks[i]
+		if hunk.Classification == HunkSkip || hunk.Classification == HunkWarnPureAdd {
 			continue
 		}
-
-		hunk := ch.hunk
 
 		// Get indent from the first old line (or first new line if pure add)
 		indent := ""
@@ -228,11 +220,11 @@ func processFileForSuggestions(vcs VCS, root, headCommit, path string, dryRun bo
 
 		var commentLines []string
 
-		switch ch.classification {
+		switch hunk.Classification {
 		case HunkSuggestion:
-			commentLines = buildSuggestionComment(style, indent, hunk)
-		case HunkCraftComment:
-			commentLines = buildCraftCommentFromCodeComments(style, indent, hunk)
+			commentLines = buildSuggestionComment(style, indent, *hunk)
+		case HunkCodeComment:
+			commentLines = buildCraftCommentFromCodeComments(style, indent, *hunk)
 		}
 
 		// Insert after the hunk's old lines
@@ -252,16 +244,54 @@ func processFileForSuggestions(vcs VCS, root, headCommit, path string, dryRun bo
 		resultLines = newResultLines
 	}
 
+	result.Content = strings.Join(resultLines, "\n")
+	return result
+}
+
+func processFileForSuggestions(vcs VCS, root, headCommit, path string, dryRun bool) (processResult, error) {
+	var result processResult
+
+	// Get the diff for this file
+	diffOutput, err := vcs.GetFileDiff(headCommit, path)
+	if err != nil {
+		return result, err
+	}
+
+	if diffOutput == "" {
+		return result, nil
+	}
+
+	// Get original file content from head commit
+	originalContent, err := vcs.GetFileAtCommit(headCommit, path)
+	if err != nil {
+		// File might not exist at head commit (newly added file)
+		// All changes would be pure additions, skip with warning
+		fmt.Fprintf(os.Stderr, "Warning: %s: file not in PR head, skipping (new file?)\n", path)
+		return result, nil
+	}
+
+	// Transform the file
+	transformed := transformFileWithSuggestions(originalContent, diffOutput, path)
+	result = transformed.Stats
+
+	// Print warnings
+	for _, warning := range transformed.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+	}
+
+	if result.suggestions == 0 && result.craftComments == 0 {
+		return result, nil
+	}
+
 	// Write or show the result
 	if dryRun {
 		fmt.Printf("\n--- %s (dry-run) ---\n", path)
-		for i, line := range resultLines {
+		for i, line := range strings.Split(transformed.Content, "\n") {
 			fmt.Printf("%4d: %s\n", i+1, line)
 		}
 	} else {
-		content := strings.Join(resultLines, "\n")
 		fullPath := filepath.Join(root, path)
-		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(fullPath, []byte(transformed.Content), 0644); err != nil {
 			return result, fmt.Errorf("writing file: %w", err)
 		}
 		fmt.Printf("  %s: %d suggestions, %d comments\n", path, result.suggestions, result.craftComments)
@@ -270,77 +300,58 @@ func processFileForSuggestions(vcs VCS, root, headCommit, path string, dryRun bo
 	return result, nil
 }
 
-// getModifiedFiles returns files modified between commit and working tree.
-func getModifiedFiles(vcs VCS, commit string) ([]string, error) {
-	switch v := vcs.(type) {
-	case *GitRepo:
-		out, err := v.run("diff", "--name-only", commit, "HEAD")
-		if err != nil {
-			return nil, err
-		}
-		if out == "" {
-			return nil, nil
-		}
-		return strings.Split(out, "\n"), nil
-	case *JJRepo:
-		out, err := v.run("diff", "--summary", "--from", commit, "--to", "@")
-		if err != nil {
-			return nil, err
-		}
-		if out == "" {
-			return nil, nil
-		}
-		// jj diff --summary format: "M path" or "A path" etc.
-		var files []string
-		for _, line := range strings.Split(out, "\n") {
-			parts := strings.SplitN(line, " ", 2)
-			if len(parts) == 2 {
-				files = append(files, parts[1])
-			}
-		}
-		return files, nil
-	default:
-		return nil, fmt.Errorf("unsupported VCS type")
-	}
-}
-
 // getFileHunks returns parsed diff hunks for a file.
 func getFileHunks(vcs VCS, commit, path string) ([]Hunk, error) {
-	var diffOutput string
-	var err error
-
-	switch v := vcs.(type) {
-	case *GitRepo:
-		diffOutput, err = v.run("diff", "-U0", commit, "HEAD", "--", path)
-	case *JJRepo:
-		diffOutput, err = v.run("diff", "--git", "--context=0", "--from", commit, "--to", "@", path)
-	default:
-		return nil, fmt.Errorf("unsupported VCS type")
-	}
-
+	diffOutput, err := vcs.GetFileDiff(commit, path)
 	if err != nil {
 		return nil, err
 	}
-
 	return parseUnifiedDiff(diffOutput), nil
 }
 
-// getFileAtCommit returns file content at a specific commit.
-func getFileAtCommit(vcs VCS, commit, path string) (string, error) {
-	switch v := vcs.(type) {
-	case *GitRepo:
-		return v.run("show", commit+":"+path)
-	case *JJRepo:
-		// jj doesn't have a direct "show file at commit" command
-		// Use git show through the colocated repo
-		out, err := v.run("file", "show", "-r", commit, path)
-		if err != nil {
-			return "", err
-		}
-		return out, nil
-	default:
-		return "", fmt.Errorf("unsupported VCS type")
+// CheckForNonCraftChanges checks if there are any code changes that haven't been
+// converted to craft comments/suggestions. Returns an error if found.
+func CheckForNonCraftChanges(vcs VCS, headCommit string) error {
+	files, err := vcs.GetModifiedFiles(headCommit)
+	if err != nil {
+		return err
 	}
+
+	var problems []string
+
+	for _, path := range files {
+		if path == prStateFile {
+			continue
+		}
+
+		hunks, err := getFileHunks(vcs, headCommit, path)
+		if err != nil {
+			// File might not exist at head commit, that's a problem too
+			problems = append(problems, fmt.Sprintf("%s: new file with code changes", path))
+			continue
+		}
+
+		style := getCommentStyle(path)
+
+		for i := range hunks {
+			classifyHunk(&hunks[i], style)
+
+			switch hunks[i].Classification {
+			case HunkSuggestion:
+				problems = append(problems, fmt.Sprintf("%s:%d: code change not converted to suggestion", path, hunks[i].NewStart))
+			case HunkCodeComment:
+				problems = append(problems, fmt.Sprintf("%s:%d: code comment not converted to craft comment", path, hunks[i].NewStart))
+			case HunkWarnPureAdd:
+				problems = append(problems, fmt.Sprintf("%s:%d: pure code addition", path, hunks[i].NewStart))
+			}
+		}
+	}
+
+	if len(problems) > 0 {
+		return fmt.Errorf("found non-craft code changes:\n  %s\n\nRun 'craft suggest' to convert code changes to suggestions", strings.Join(problems, "\n  "))
+	}
+
+	return nil
 }
 
 // parseUnifiedDiff parses unified diff output into hunks.
@@ -392,9 +403,8 @@ func parseUnifiedDiff(diff string) []Hunk {
 			currentHunk.OldLines = append(currentHunk.OldLines, strings.TrimPrefix(line, "-"))
 		} else if strings.HasPrefix(line, "+") {
 			currentHunk.NewLines = append(currentHunk.NewLines, strings.TrimPrefix(line, "+"))
-		} else if strings.HasPrefix(line, " ") {
-			currentHunk.Context = append(currentHunk.Context, strings.TrimPrefix(line, " "))
 		}
+		// Context lines (starting with " ") are ignored since we use -U0
 	}
 
 	// Don't forget the last hunk
@@ -405,8 +415,8 @@ func parseUnifiedDiff(diff string) []Hunk {
 	return hunks
 }
 
-// classifyHunk determines what to do with a hunk.
-func classifyHunk(hunk Hunk, style commentStyle) HunkClassification {
+// classifyHunk determines what to do with a hunk and sets hunk.Classification.
+func classifyHunk(hunk *Hunk, style commentStyle) {
 	// Filter out craft comment lines from new lines
 	var filteredNewLines []string
 	for _, line := range hunk.NewLines {
@@ -417,12 +427,14 @@ func classifyHunk(hunk Hunk, style commentStyle) HunkClassification {
 
 	// If all new lines were craft comments, skip this hunk
 	if len(filteredNewLines) == 0 && len(hunk.OldLines) == 0 {
-		return HunkSkip
+		hunk.Classification = HunkSkip
+		return
 	}
 
-	// If there are deletions, this is a code change → suggestion
+	// If there are deletions, this is a code change -> suggestion
 	if len(hunk.OldLines) > 0 {
-		return HunkSuggestion
+		hunk.Classification = HunkSuggestion
+		return
 	}
 
 	// Pure additions - check if they're all code comments
@@ -435,11 +447,12 @@ func classifyHunk(hunk Hunk, style commentStyle) HunkClassification {
 	}
 
 	if allCodeComments && len(filteredNewLines) > 0 {
-		return HunkCraftComment
+		hunk.Classification = HunkCodeComment
+		return
 	}
 
 	// Pure code addition - warn and skip
-	return HunkWarnPureAdd
+	hunk.Classification = HunkWarnPureAdd
 }
 
 // isCraftCommentLine checks if a line contains craft box characters.
@@ -462,7 +475,8 @@ func buildSuggestionComment(style commentStyle, indent string, hunk Hunk) []stri
 	// Header - use OldCount from hunk header for accurate range
 	rangeField := ""
 	if hunk.OldCount > 1 {
-		rangeField = fmt.Sprintf(" %s range %d", headerFieldSep, -(hunk.OldCount - 1))
+		// headerFieldSep is " ─ " so we don't need extra spaces
+		rangeField = fmt.Sprintf("%srange %d", headerFieldSep, -(hunk.OldCount - 1))
 	}
 	header := indent + formatCraftLine(style.linePrefix, boxThread, headerStart+" new"+rangeField)
 	lines = append(lines, header)
