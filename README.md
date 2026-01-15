@@ -15,9 +15,9 @@ navigate the new code as you would normally, see existing comments, add new
 comments, and then sync that to the PR as a review pass.
 
 The special comments are marked with special characters (unicode box-drawing
-characters) to differentiate from normal comments. This implies you need a
-little bit of editor integration to use it effectively. The integration is
-currently implemented for Vim.
+characters) to differentiate from normal comments. There's some very light
+editor support (currently implemented for Vim) to work with these special
+comments, but you can also do some basic operations without any editor support.
 
 Even "outdated" and "resolved" comments are reflected in the code somewhere.
 This is sometimes slightly annoying on long reviews, but it means you can still
@@ -62,8 +62,11 @@ work intuitively.
 (Note that due to GitHub limitations, all new code comments must be within a few
 lines of code changes, you can't just add them anywhere.)
 
-You can also add review-level comments in the `PR-STATE.txt` file. (The editor
-integration is broken for this right now, will fix soon.)
+As a convenience, `<Leader>S` adds a comment just like `C`, but with the current
+line or visual selection copied as a "suggestion" that you can edit. (And see
+"magic suggestions" below.)
+
+You can also add review-level comments in the `PR-STATE.txt` file.
 
 When you've added all your comments, run `craft send`. `send` accepts flags:
 
@@ -75,6 +78,44 @@ When you've added all your comments, run `craft send`. `send` accepts flags:
 That's pretty much it.
 
 To get the next round, just run `craft get` again.
+
+## magic suggestions
+
+To make suggestions even easier, you can just edit the new code and run `craft
+suggest`. It'll turn your edits into special craft comments, which you can
+follow up with `craft send`.
+
+It'll also turn new _plain code_ comments into craft comments, so you don't need
+editor integration to add new comments (although you do to reply).
+
+(These are still subject to GitHub's limitation that comments need to be near
+diffs.)
+
+## reference
+
+Commands:
+
+`craft get <number>`: pulls pr and embeds existing comments
+
+`craft send`: sends new comments
+
+`craft suggest`: converts changes to comments
+
+Vim commands:
+
+`:Ctool`: open fugitive difftool with the correct base
+
+`:Cbase`: set a new base
+
+`:Csplit`: open diffsplit
+
+Vim bindings:
+
+`<Leader>C`: new comment or reply (normal or visual)
+
+`<Leader>S`: new comment with suggestion (normal or visual)
+
+`<Leader>D`: open diffsplit (normal)
 
 ## who wrote it?
 
@@ -94,8 +135,8 @@ review systems.
 
 **Is it specific to Vim?**
 I've only written integrations for Vim, but it should be easy to adapt them for
-any editor. Because of the special characters used, you do need a little editor
-integration.
+any editor. Because of the special characters used, you need a little editor
+integration for full functionality.
 
 **How does it interact with my VCS?**
 Git and Jujutsu are supported. I've mainly been using Jujutsu. In Git, it
@@ -110,6 +151,4 @@ creates changes on top of the PR head and tries to clean up old ones.
   that ignore irrelevant merges and even rebases.
 - Automatically handle rebasing comments on top of changed code, if the PR
   changes while you're reviewing.
-- Allow small edits to the code and automatically turn changes into "suggestion"
-  comments.
 
