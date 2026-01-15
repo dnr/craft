@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseUnifiedDiff(t *testing.T) {
@@ -106,24 +107,16 @@ index abc123..def456 100644
 		t.Run(tt.name, func(t *testing.T) {
 			hunks := parseUnifiedDiff(tt.diff)
 
-			if len(hunks) != len(tt.expected) {
-				t.Fatalf("got %d hunks, want %d", len(hunks), len(tt.expected))
-			}
+			require.Len(t, hunks, len(tt.expected))
 
 			for i, got := range hunks {
 				want := tt.expected[i]
-				if got.OldStart != want.OldStart || got.OldCount != want.OldCount ||
-					got.NewStart != want.NewStart || got.NewCount != want.NewCount {
-					t.Errorf("hunk %d: got range @@ -%d,%d +%d,%d @@, want @@ -%d,%d +%d,%d @@",
-						i, got.OldStart, got.OldCount, got.NewStart, got.NewCount,
-						want.OldStart, want.OldCount, want.NewStart, want.NewCount)
-				}
-				if !slicesEqual(got.OldLines, want.OldLines) {
-					t.Errorf("hunk %d: got OldLines %v, want %v", i, got.OldLines, want.OldLines)
-				}
-				if !slicesEqual(got.NewLines, want.NewLines) {
-					t.Errorf("hunk %d: got NewLines %v, want %v", i, got.NewLines, want.NewLines)
-				}
+				assert.Equal(t, want.OldStart, got.OldStart, "hunk %d OldStart", i)
+				assert.Equal(t, want.OldCount, got.OldCount, "hunk %d OldCount", i)
+				assert.Equal(t, want.NewStart, got.NewStart, "hunk %d NewStart", i)
+				assert.Equal(t, want.NewCount, got.NewCount, "hunk %d NewCount", i)
+				assert.Equal(t, want.OldLines, got.OldLines, "hunk %d OldLines", i)
+				assert.Equal(t, want.NewLines, got.NewLines, "hunk %d NewLines", i)
 			}
 		})
 	}
@@ -216,9 +209,7 @@ func TestClassifyHunk(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			hunk := tt.hunk
 			classifyHunk(&hunk, tt.style)
-			if hunk.Classification != tt.expected {
-				t.Errorf("got classification %v, want %v", hunk.Classification, tt.expected)
-			}
+			assert.Equal(t, tt.expected, hunk.Classification)
 		})
 	}
 }
@@ -237,10 +228,7 @@ func TestIsCraftCommentLine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isCraftCommentLine(tt.line)
-		if got != tt.expected {
-			t.Errorf("isCraftCommentLine(%q) = %v, want %v", tt.line, got, tt.expected)
-		}
+		assert.Equal(t, tt.expected, isCraftCommentLine(tt.line), "line: %q", tt.line)
 	}
 }
 
@@ -262,23 +250,8 @@ func TestIsCodeCommentLine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isCodeCommentLine(tt.line, tt.style)
-		if got != tt.expected {
-			t.Errorf("isCodeCommentLine(%q, %v) = %v, want %v", tt.line, tt.style.linePrefix, got, tt.expected)
-		}
+		assert.Equal(t, tt.expected, isCodeCommentLine(tt.line, tt.style), "line: %q, prefix: %q", tt.line, tt.style.linePrefix)
 	}
-}
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // generateDiff shells out to diff to produce a unified diff between two strings.
@@ -346,26 +319,14 @@ func example() {
 `
 
 	diff := generateDiff(t, before, after)
-	if diff == "" {
-		t.Fatal("diff generated empty output")
-	}
+	require.NotEmpty(t, diff, "diff generated empty output")
 
 	result := transformFileWithSuggestions(before, diff, "test.go")
 
-	if result.Stats.suggestions != 1 {
-		t.Errorf("got %d suggestions, want 1", result.Stats.suggestions)
-	}
-	if result.Stats.craftComments != 1 {
-		t.Errorf("got %d craft comments, want 1", result.Stats.craftComments)
-	}
-	if result.Stats.warnings != 1 {
-		t.Errorf("got %d warnings, want 1", result.Stats.warnings)
-	}
-
-	if result.Content != expected {
-		t.Errorf("content mismatch.\n\nGot:\n%s\n\nWant:\n%s\n\nDiff:\n%s",
-			result.Content, expected, generateDiff(t, expected, result.Content))
-	}
+	assert.Equal(t, 1, result.Stats.suggestions)
+	assert.Equal(t, 1, result.Stats.craftComments)
+	assert.Equal(t, 1, result.Stats.warnings)
+	assert.Equal(t, expected, result.Content)
 }
 
 func TestTransformMultiLineChange(t *testing.T) {
@@ -382,13 +343,6 @@ func TestTransformMultiLineChange(t *testing.T) {
 }
 `
 
-	diff := generateDiff(t, before, after)
-	result := transformFileWithSuggestions(before, diff, "test.go")
-
-	if result.Stats.suggestions != 1 {
-		t.Errorf("got %d suggestions, want 1", result.Stats.suggestions)
-	}
-
 	// range -2 means 3 lines are being replaced (range = -(OldCount-1))
 	// headerFieldSep is " ─ " so header looks like "new ─ range -2"
 	expected := "func foo() {\n" +
@@ -402,9 +356,11 @@ func TestTransformMultiLineChange(t *testing.T) {
 		"\t// ║ ```\n" +
 		"}\n"
 
-	if result.Content != expected {
-		t.Errorf("content mismatch.\n\nGot:\n%q\n\nWant:\n%q", result.Content, expected)
-	}
+	diff := generateDiff(t, before, after)
+	result := transformFileWithSuggestions(before, diff, "test.go")
+
+	assert.Equal(t, 1, result.Stats.suggestions)
+	assert.Equal(t, expected, result.Content)
 }
 
 func TestTransformDeletion(t *testing.T) {
@@ -436,14 +392,8 @@ func TestTransformDeletion(t *testing.T) {
 	diff := generateDiff(t, before, after)
 	result := transformFileWithSuggestions(before, diff, "test.go")
 
-	if result.Stats.suggestions != 1 {
-		t.Errorf("got %d suggestions, want 1", result.Stats.suggestions)
-	}
-
-	if result.Content != expected {
-		t.Errorf("content mismatch.\n\nGot:\n%s\n\nWant:\n%s\n\nDiff:\n%s",
-			result.Content, expected, generateDiff(t, expected, result.Content))
-	}
+	assert.Equal(t, 1, result.Stats.suggestions)
+	assert.Equal(t, expected, result.Content)
 }
 
 func TestTransformPythonFile(t *testing.T) {
