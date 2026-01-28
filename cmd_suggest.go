@@ -426,10 +426,10 @@ func parseUnifiedDiff(diff string) (hunks []*Hunk) {
 func classifyHunk(hunk *Hunk, style commentStyle) (classification HunkClassification) {
 	defer func() { hunk.Classification = classification }()
 
-	// Filter out craft comment lines from new lines
+	// Filter out empty lines and craft comment lines from new lines
 	var filteredNewLines []string
 	for _, line := range hunk.NewLines {
-		if !isCraftCommentLine(line) {
+		if line != "" && !isCraftCommentLine(line) {
 			filteredNewLines = append(filteredNewLines, line)
 		}
 	}
@@ -471,7 +471,8 @@ func classifyHunk(hunk *Hunk, style commentStyle) (classification HunkClassifica
 func isCraftCommentLine(line string) bool {
 	return strings.Contains(line, boxThread) ||
 		strings.Contains(line, boxReply) ||
-		strings.Contains(line, boxBody)
+		strings.Contains(line, boxBody) ||
+		strings.Contains(line, outdatedCommentsHeader)
 }
 
 // isCodeCommentLine checks if a line is a code comment (starts with comment prefix).

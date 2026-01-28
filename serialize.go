@@ -37,6 +37,8 @@ const (
 	headerFieldSep = " ─ "
 	prStateFile    = "PR-STATE.txt"
 	defaultWrap    = 80 // Default wrap width for comment text
+
+	outdatedCommentsHeader = "━━━━━━━━━ outdated comments"
 )
 
 // getIndent returns the leading whitespace of a line.
@@ -477,7 +479,7 @@ func serializeFileComments(fsys fs.FS, path string, threads []ReviewThread) erro
 			return outdatedThreads[i].OriginalLine < outdatedThreads[j].OriginalLine
 		})
 
-		lines = append(lines, "", style.linePrefix+" ━━━━━━━━━ outdated comments")
+		lines = append(lines, "", style.linePrefix+" "+outdatedCommentsHeader)
 
 		for threadIdx, thread := range outdatedThreads {
 			for i, comment := range thread.Comments {

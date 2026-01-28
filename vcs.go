@@ -148,7 +148,7 @@ func (g *GitRepo) GetModifiedFiles(commit string) ([]string, error) {
 }
 
 func (g *GitRepo) GetFileDiff(commit, path string) (string, error) {
-	return g.run("diff", "-U0", commit, "HEAD", "--", path)
+	return g.run("diff", "-U0", "-w", commit, "HEAD", "--", path)
 }
 
 func (g *GitRepo) GetFileAtCommit(commit, path string) (string, error) {
@@ -295,7 +295,7 @@ func (j *JJRepo) GetModifiedFiles(commit string) ([]string, error) {
 }
 
 func (j *JJRepo) GetFileDiff(commit, path string) (string, error) {
-	return j.run("diff", "--git", "--context", "0", "--from", commit, "--to", "@", path)
+	return j.run("diff", "--git", "--context", "0", "-w", "--from", commit, "--to", "@", path)
 }
 
 func (j *JJRepo) GetFileAtCommit(commit, path string) (string, error) {
