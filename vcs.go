@@ -184,9 +184,33 @@ func (j *JJRepo) runNoOutput(args ...string) error {
 	return cmd.Run()
 }
 
-func (j *JJRepo) runGitNoOutput(args ...string) error {
+// runGit runs a git command in the default workspace (where .git lives).
+// This handles alternative jj workspaces that don't have a colocated .git.
+func (j *JJRepo) runGit(args ...string) (string, error) {
+	gitWorkdir, err := j.findGitWorkdir()
+	if err != nil {
+		return "", fmt.Errorf("finding git workdir: %w", err)
+	}
 	cmd := exec.Command("git", args...)
-	cmd.Dir = j.root
+	cmd.Dir = gitWorkdir
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), string(exitErr.Stderr))
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// runGitNoOutput runs a git command in the default workspace with stdout/stderr visible.
+func (j *JJRepo) runGitNoOutput(args ...string) error {
+	gitWorkdir, err := j.findGitWorkdir()
+	if err != nil {
+		return fmt.Errorf("finding git workdir: %w", err)
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Dir = gitWorkdir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -199,11 +223,42 @@ func (j *JJRepo) HasUncommittedChanges() (bool, error) {
 
 func (j *JJRepo) FetchPRBranch(remote string, prNumber int) error {
 	refspec := fmt.Sprintf("refs/pull/%d/head:pr-%d", prNumber, prNumber)
-	err := j.runGitNoOutput("fetch", "--force", remote, refspec)
-	if err != nil {
+	if err := j.runGitNoOutput("fetch", "--force", remote, refspec); err != nil {
 		return err
 	}
 	return j.runNoOutput("git", "import")
+}
+
+// findGitWorkdir returns the directory containing the colocated .git directory.
+// In the default workspace, this is j.root. In alternative workspaces, we need
+// to follow the .jj/repo file to find the default workspace.
+func (j *JJRepo) findGitWorkdir() (string, error) {
+	jjRepo := filepath.Join(j.root, ".jj", "repo")
+	info, err := os.Lstat(jjRepo)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", jjRepo, err)
+	}
+
+	if info.IsDir() {
+		// We're in the default workspace
+		return j.root, nil
+	}
+
+	// It's a file containing the path to the default workspace's .jj/repo
+	content, err := os.ReadFile(jjRepo)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", jjRepo, err)
+	}
+
+	repoPath := strings.TrimSpace(string(content))
+	// Strip the .jj/repo suffix to get the workspace root
+	if !strings.HasSuffix(repoPath, filepath.Join(".jj", "repo")) {
+		return "", fmt.Errorf("unexpected repo path format: %s", repoPath)
+	}
+	gitBase := strings.TrimSuffix(repoPath, filepath.Join(".jj", "repo"))
+	gitBase = strings.TrimRight(gitBase, "/")
+	// fmt.Println("Alternative workspace, using git directory at", gitBase)
+	return gitBase, nil
 }
 
 func (j *JJRepo) CreateAndSwitchBranch(prNumber int, commitOID string) error {
@@ -243,14 +298,7 @@ func (j *JJRepo) Commit(message string) error {
 }
 
 func (j *JJRepo) GetRemoteURL(remote string) (string, error) {
-	// jj stores git remote info, we can use git config
-	cmd := exec.Command("git", "remote", "get-url", remote)
-	cmd.Dir = j.root
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+	return j.runGit("remote", "get-url", remote)
 }
 
 func (j *JJRepo) GetCurrentBranch() (string, error) {
@@ -266,13 +314,7 @@ func (j *JJRepo) GetConfigValue(key string) (string, error) {
 		return out, nil
 	}
 	// Fall back to git config for things like craft.remoteName
-	cmd := exec.Command("git", "config", "--get", key)
-	cmd.Dir = j.root
-	gitOut, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(gitOut)), nil
+	return j.runGit("config", "--get", key)
 }
 
 func (j *JJRepo) GetModifiedFiles(commit string) ([]string, error) {
