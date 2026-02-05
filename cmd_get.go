@@ -130,7 +130,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 	// Serialize PR state to files
 	fmt.Print("Serializing PR state... ")
-	opts := SerializeOptions{FS: DirFS(vcs.Root())}
+	opts := SerializeOptions{FS: DirFS(vcs.Root()), VCS: vcs}
 	if err := Serialize(pr, opts); err != nil {
 		return fmt.Errorf("serializing: %w", err)
 	}

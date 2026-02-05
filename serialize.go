@@ -312,7 +312,8 @@ func parseHeader(line string) (Header, bool) {
 
 // SerializeOptions configures serialization behavior.
 type SerializeOptions struct {
-	FS fs.FS // Filesystem to read/write (use *os.Root or fstest.MapFS)
+	FS  fs.FS // Filesystem to read/write (use *os.Root or fstest.MapFS)
+	VCS VCS   // Optional: VCS for listing files (required for DirFS in jj alternative workspaces)
 }
 
 // Serialize writes the PR data to files in the filesystem.
@@ -579,7 +580,7 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 	}
 
 	// Get list of files
-	files, err := fsListFiles(opts.FS)
+	files, err := fsListFiles(opts)
 	if err != nil {
 		return nil, fmt.Errorf("listing files: %w", err)
 	}
@@ -592,6 +593,10 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 				// harmless error caused by submodules
 				continue
 			}
+			if errors.Is(err, fs.ErrNotExist) {
+				// file listed but not present (e.g., submodule in jj workspace)
+				continue
+			}
 			return nil, fmt.Errorf("deserializing %s: %w", path, err)
 		}
 		pr.ReviewThreads = append(pr.ReviewThreads, threads...)
@@ -601,8 +606,8 @@ func Deserialize(opts SerializeOptions) (*PullRequest, error) {
 }
 
 // fsListFiles returns all files to scan for comments.
-func fsListFiles(fsys fs.FS) ([]string, error) {
-	switch f := fsys.(type) {
+func fsListFiles(opts SerializeOptions) ([]string, error) {
+	switch f := opts.FS.(type) {
 	case fstest.MapFS:
 		var files []string
 		for name := range f {
@@ -613,6 +618,11 @@ func fsListFiles(fsys fs.FS) ([]string, error) {
 		sort.Strings(files)
 		return files, nil
 	case DirFS:
+		// Use VCS.ListFiles if available (handles jj alternative workspaces)
+		if opts.VCS != nil {
+			return opts.VCS.ListFiles()
+		}
+		// Fallback to git ls-files for backwards compatibility
 		cmd := exec.Command("git", "ls-files")
 		cmd.Dir = string(f)
 		out, err := cmd.Output()
@@ -627,7 +637,7 @@ func fsListFiles(fsys fs.FS) ([]string, error) {
 		}
 		return files, nil
 	default:
-		return nil, fmt.Errorf("unsupported filesystem type %T for listing", fsys)
+		return nil, fmt.Errorf("unsupported filesystem type %T for listing", opts.FS)
 	}
 }
 

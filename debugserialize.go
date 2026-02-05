@@ -57,9 +57,13 @@ func runDebugSerialize(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parsing input JSON: %w", err)
 	}
 
+	// Detect VCS for the workdir
+	vcs, _ := DetectVCS(flagSerializeWorkdir)
+
 	// Serialize to files
 	opts := SerializeOptions{
-		FS: DirFS(flagSerializeWorkdir),
+		FS:  DirFS(flagSerializeWorkdir),
+		VCS: vcs,
 	}
 	if err := Serialize(&pr, opts); err != nil {
 		return fmt.Errorf("serializing: %w", err)
@@ -70,8 +74,12 @@ func runDebugSerialize(cmd *cobra.Command, args []string) error {
 }
 
 func runDebugDeserialize(cmd *cobra.Command, args []string) error {
+	// Detect VCS for the workdir
+	vcs, _ := DetectVCS(flagSerializeWorkdir)
+
 	opts := SerializeOptions{
-		FS: DirFS(flagSerializeWorkdir),
+		FS:  DirFS(flagSerializeWorkdir),
+		VCS: vcs,
 	}
 
 	pr, err := Deserialize(opts)

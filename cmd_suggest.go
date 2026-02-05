@@ -76,7 +76,7 @@ func runSuggest(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Using %s repository at %s\n", vcs.Name(), vcs.Root())
 
 	// Read PR state to get head commit
-	opts := SerializeOptions{FS: DirFS(vcs.Root())}
+	opts := SerializeOptions{FS: DirFS(vcs.Root()), VCS: vcs}
 	pr, err := Deserialize(opts)
 	if err != nil {
 		return fmt.Errorf("reading PR state: %w", err)

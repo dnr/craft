@@ -63,7 +63,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 
 	// Deserialize PR state from files
 	fmt.Print("Reading PR state from files... ")
-	opts := SerializeOptions{FS: DirFS(vcs.Root())}
+	opts := SerializeOptions{FS: DirFS(vcs.Root()), VCS: vcs}
 	pr, err := Deserialize(opts)
 	if err != nil {
 		return fmt.Errorf("deserializing: %w", err)

@@ -34,7 +34,7 @@ func runBase(cmd *cobra.Command, args []string) error {
 	}
 
 	// Deserialize PR state
-	opts := SerializeOptions{FS: DirFS(vcs.Root())}
+	opts := SerializeOptions{FS: DirFS(vcs.Root()), VCS: vcs}
 	pr, err := Deserialize(opts)
 	if err != nil {
 		return fmt.Errorf("reading PR state: %w", err)

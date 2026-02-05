@@ -47,6 +47,9 @@ type VCS interface {
 
 	// GetFileAtCommit returns file content at a specific commit
 	GetFileAtCommit(commit, path string) (string, error)
+
+	// ListFiles returns all tracked files in the repository
+	ListFiles() ([]string, error)
 }
 
 // DetectVCS detects whether the current directory is a git or jj repo.
@@ -153,6 +156,17 @@ func (g *GitRepo) GetFileDiff(commit, path string) (string, error) {
 
 func (g *GitRepo) GetFileAtCommit(commit, path string) (string, error) {
 	return g.run("show", commit+":"+path)
+}
+
+func (g *GitRepo) ListFiles() ([]string, error) {
+	out, err := g.run("ls-files")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
 }
 
 // JJRepo implements VCS for jj repositories.
@@ -342,6 +356,17 @@ func (j *JJRepo) GetFileDiff(commit, path string) (string, error) {
 
 func (j *JJRepo) GetFileAtCommit(commit, path string) (string, error) {
 	return j.run("file", "show", "-r", commit, path)
+}
+
+func (j *JJRepo) ListFiles() ([]string, error) {
+	out, err := j.run("file", "list")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
 }
 
 // ParseGitHubRemote extracts owner and repo from a GitHub remote URL.
