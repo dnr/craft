@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -369,29 +370,19 @@ func (j *JJRepo) ListFiles() ([]string, error) {
 	return strings.Split(out, "\n"), nil
 }
 
-// ParseGitHubRemote extracts owner and repo from a GitHub remote URL.
-func ParseGitHubRemote(url string) (owner, repo string, err error) {
-	// Handle SSH format: git@github.com:owner/repo.git
-	if strings.HasPrefix(url, "git@github.com:") {
-		path := strings.TrimPrefix(url, "git@github.com:")
-		path = strings.TrimSuffix(path, ".git")
-		parts := strings.Split(path, "/")
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid GitHub SSH URL: %s", url)
-		}
-		return parts[0], parts[1], nil
-	}
 
-	// Handle HTTPS format: https://github.com/owner/repo.git
-	if strings.HasPrefix(url, "https://github.com/") {
-		path := strings.TrimPrefix(url, "https://github.com/")
-		path = strings.TrimSuffix(path, ".git")
-		parts := strings.Split(path, "/")
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid GitHub HTTPS URL: %s", url)
-		}
-		return parts[0], parts[1], nil
+// prNumberFromBranch returns the PR number from the current pr-N branch.
+func prNumberFromBranch(vcs VCS) (int, error) {
+	branch, err := vcs.GetCurrentBranch()
+	if err != nil {
+		return 0, fmt.Errorf("getting current branch: %w", err)
 	}
-
-	return "", "", fmt.Errorf("not a GitHub URL: %s", url)
+	if !strings.HasPrefix(branch, "pr-") {
+		return 0, fmt.Errorf("not on a pr-N branch (current: %s)", branch)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(branch, "pr-"))
+	if err != nil {
+		return 0, fmt.Errorf("invalid branch name: %s", branch)
+	}
+	return n, nil
 }

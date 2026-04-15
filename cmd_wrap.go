@@ -2,7 +2,6 @@ package main
 
 import (
 	"io"
-	"math"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -52,7 +51,7 @@ func runUnwrap(cmd *cobra.Command, args []string) error {
 
 	p := markdown.Parser{}
 	doc := p.Parse(string(input))
-	unwrapped := Wrap(doc, math.MaxInt)
+	unwrapped := Unwrap(doc)
 	os.Stdout.WriteString(markdown.Format(unwrapped))
 	return nil
 }

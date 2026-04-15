@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -42,21 +41,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Using %s repository at %s\n", vcs.Name(), vcs.Root())
 
-	// Determine remote
-	remote := flagGetRemote
-	if remote == "" {
-		remote, _ = vcs.GetConfigValue("craft.remoteName")
-		if remote == "" {
-			remote = "origin"
-		}
-	}
-
-	// Get GitHub owner/repo from remote
-	remoteURL, err := vcs.GetRemoteURL(remote)
-	if err != nil {
-		return fmt.Errorf("getting remote URL: %w", err)
-	}
-	owner, repo, err := ParseGitHubRemote(remoteURL)
+	// Determine remote and GitHub repo
+	remote := resolveRemote(vcs, flagGetRemote)
+	client, owner, repo, err := getGitHubClientAndRepo(vcs, remote)
 	if err != nil {
 		return err
 	}
@@ -70,18 +57,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid PR number: %s", args[0])
 		}
 	} else {
-		// Try to get from current branch name
-		branch, err := vcs.GetCurrentBranch()
+		prNumber, err = prNumberFromBranch(vcs)
 		if err != nil {
-			return fmt.Errorf("getting current branch: %w", err)
-		}
-		if strings.HasPrefix(branch, "pr-") {
-			prNumber, err = strconv.Atoi(strings.TrimPrefix(branch, "pr-"))
-			if err != nil {
-				return fmt.Errorf("current branch %s is not a valid PR branch", branch)
-			}
-		} else {
-			return fmt.Errorf("no PR number given and not on a pr-N branch")
+			return err
 		}
 	}
 	fmt.Printf("PR number: %d\n", prNumber)
@@ -96,13 +74,6 @@ func runGet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("uncommitted changes detected; use --force to discard or commit/send first")
 		}
 	}
-
-	// Get GitHub token
-	token, err := getGitHubToken()
-	if err != nil {
-		return fmt.Errorf("getting GitHub token: %w", err)
-	}
-	client := NewGitHubClient(token)
 
 	// Fetch PR data from GitHub API
 	fmt.Print("Fetching PR data from GitHub... ")

@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -50,16 +48,9 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get current branch to determine PR number
-	branch, err := vcs.GetCurrentBranch()
+	prNumber, err := prNumberFromBranch(vcs)
 	if err != nil {
-		return fmt.Errorf("getting current branch: %w", err)
-	}
-	if !strings.HasPrefix(branch, "pr-") {
-		return fmt.Errorf("not on a pr-N branch (current: %s)", branch)
-	}
-	prNumber, err := strconv.Atoi(strings.TrimPrefix(branch, "pr-"))
-	if err != nil {
-		return fmt.Errorf("invalid branch name: %s", branch)
+		return err
 	}
 	fmt.Printf("PR #%d\n", prNumber)
 
@@ -120,22 +111,8 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get GitHub token and remote info
-	token, err := getGitHubToken()
-	if err != nil {
-		return fmt.Errorf("getting GitHub token: %w", err)
-	}
-	client := NewGitHubClient(token)
-
-	// Get owner/repo from remote
-	remote, _ := vcs.GetConfigValue("craft.remoteName")
-	if remote == "" {
-		remote = "origin"
-	}
-	remoteURL, err := vcs.GetRemoteURL(remote)
-	if err != nil {
-		return fmt.Errorf("getting remote URL: %w", err)
-	}
-	owner, repo, err := ParseGitHubRemote(remoteURL)
+	remote := resolveRemote(vcs, "")
+	client, owner, repo, err := getGitHubClientAndRepo(vcs, remote)
 	if err != nil {
 		return err
 	}

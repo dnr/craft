@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shurcooL/githubv4"
@@ -518,4 +519,208 @@ func convertReview(r gqlReview) Review {
 		review.SubmittedAt = &t
 	}
 	return review
+}
+
+// addReviewComment adds a reply comment to a pending review.
+func (c *GitHubClient) addReviewComment(ctx context.Context, reviewID githubv4.ID, replyToNodeID, body string) (string, error) {
+	var mutation struct {
+		AddPullRequestReviewComment struct {
+			Comment struct {
+				ID githubv4.ID
+			}
+		} `graphql:"addPullRequestReviewComment(input: $input)"`
+	}
+
+	bodyVal := githubv4.String(body)
+	replyToID := githubv4.ID(replyToNodeID)
+
+	input := githubv4.AddPullRequestReviewCommentInput{
+		PullRequestReviewID: &reviewID,
+		Body:                &bodyVal,
+		InReplyTo:           &replyToID,
+	}
+
+	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
+		return "", fmt.Errorf("addPullRequestReviewComment mutation failed: %w", err)
+	}
+
+	return string(mutation.AddPullRequestReviewComment.Comment.ID.(string)), nil
+}
+
+// getPendingReview checks if there's an existing pending review.
+// Returns the review ID (if any), whether one exists, and any error.
+func (c *GitHubClient) getPendingReview(ctx context.Context, prNodeID string) (githubv4.ID, bool, error) {
+	var query struct {
+		Node struct {
+			PullRequest struct {
+				Reviews struct {
+					Nodes []struct {
+						ID githubv4.ID
+					}
+				} `graphql:"reviews(first: 1, states: PENDING)"`
+			} `graphql:"... on PullRequest"`
+		} `graphql:"node(id: $id)"`
+	}
+
+	vars := map[string]interface{}{
+		"id": githubv4.ID(prNodeID),
+	}
+
+	if err := c.client.Query(ctx, &query, vars); err != nil {
+		return nil, false, fmt.Errorf("checking for pending review: %w", err)
+	}
+
+	if len(query.Node.PullRequest.Reviews.Nodes) > 0 {
+		return query.Node.PullRequest.Reviews.Nodes[0].ID, true, nil
+	}
+
+	return nil, false, nil
+}
+
+// deletePendingReview deletes a pending review.
+func (c *GitHubClient) deletePendingReview(ctx context.Context, reviewID githubv4.ID) error {
+	var mutation struct {
+		DeletePullRequestReview struct {
+			PullRequestReview struct {
+				ID githubv4.ID
+			}
+		} `graphql:"deletePullRequestReview(input: $input)"`
+	}
+
+	input := githubv4.DeletePullRequestReviewInput{
+		PullRequestReviewID: reviewID,
+	}
+
+	return c.client.Mutate(ctx, &mutation, input, nil)
+}
+
+// startReviewWithThreads creates a new pending review with threads and returns its ID.
+// This works around a GitHub bug where adding threads to an existing review fails silently.
+func (c *GitHubClient) startReviewWithThreads(ctx context.Context, prNodeID, commitOID string, threads []NewThreadInfo) (githubv4.ID, error) {
+	var mutation struct {
+		AddPullRequestReview struct {
+			PullRequestReview struct {
+				ID githubv4.ID
+			}
+		} `graphql:"addPullRequestReview(input: $input)"`
+	}
+
+	prID := githubv4.ID(prNodeID)
+	commit := githubv4.GitObjectID(commitOID)
+
+	input := githubv4.AddPullRequestReviewInput{
+		PullRequestID: &prID,
+		CommitOID:     &commit,
+	}
+
+	// Add threads if provided
+	if len(threads) > 0 {
+		draftThreads := make([]*githubv4.DraftPullRequestReviewThread, len(threads))
+		for i, t := range threads {
+			line := githubv4.Int(t.Line)
+			side := githubv4.DiffSide(t.Side)
+			dt := &githubv4.DraftPullRequestReviewThread{
+				Path: githubv4.String(t.Path),
+				Line: line,
+				Body: githubv4.String(t.Body),
+				Side: &side,
+			}
+			if t.StartLine != nil {
+				startLine := githubv4.Int(*t.StartLine)
+				dt.StartLine = &startLine
+			}
+			draftThreads[i] = dt
+		}
+		input.Threads = &draftThreads
+	}
+
+	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
+		return nil, err
+	}
+
+	return mutation.AddPullRequestReview.PullRequestReview.ID, nil
+}
+
+// submitReview submits a pending review with the given event type (COMMENT, APPROVE, REQUEST_CHANGES).
+// The body is optional and becomes the top-level review comment.
+func (c *GitHubClient) submitReview(ctx context.Context, reviewID githubv4.ID, eventType, body string) error {
+	var mutation struct {
+		SubmitPullRequestReview struct {
+			PullRequestReview struct {
+				ID githubv4.ID
+			}
+		} `graphql:"submitPullRequestReview(input: $input)"`
+	}
+
+	event := githubv4.PullRequestReviewEvent(eventType)
+
+	input := githubv4.SubmitPullRequestReviewInput{
+		PullRequestReviewID: &reviewID,
+		Event:               event,
+	}
+
+	if body != "" {
+		bodyVal := githubv4.String(body)
+		input.Body = &bodyVal
+	}
+
+	return c.client.Mutate(ctx, &mutation, input, nil)
+}
+
+// resolveRemote returns the remote name to use, from an explicit override,
+// the craft.remoteName config, or "origin" as default.
+func resolveRemote(vcs VCS, override string) string {
+	if override != "" {
+		return override
+	}
+	remote, _ := vcs.GetConfigValue("craft.remoteName")
+	if remote == "" {
+		return "origin"
+	}
+	return remote
+}
+
+// getGitHubClientAndRepo creates a GitHubClient and resolves the owner/repo
+// from the given remote.
+func getGitHubClientAndRepo(vcs VCS, remote string) (*GitHubClient, string, string, error) {
+	token, err := getGitHubToken()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("getting GitHub token: %w", err)
+	}
+	remoteURL, err := vcs.GetRemoteURL(remote)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("getting remote URL: %w", err)
+	}
+	owner, repo, err := ParseGitHubRemote(remoteURL)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return NewGitHubClient(token), owner, repo, nil
+}
+
+// ParseGitHubRemote extracts owner and repo from a GitHub remote URL.
+func ParseGitHubRemote(url string) (owner, repo string, err error) {
+	// Handle SSH format: git@github.com:owner/repo.git
+	if strings.HasPrefix(url, "git@github.com:") {
+		path := strings.TrimPrefix(url, "git@github.com:")
+		path = strings.TrimSuffix(path, ".git")
+		parts := strings.Split(path, "/")
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("invalid GitHub SSH URL: %s", url)
+		}
+		return parts[0], parts[1], nil
+	}
+
+	// Handle HTTPS format: https://github.com/owner/repo.git
+	if strings.HasPrefix(url, "https://github.com/") {
+		path := strings.TrimPrefix(url, "https://github.com/")
+		path = strings.TrimSuffix(path, ".git")
+		parts := strings.Split(path, "/")
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("invalid GitHub HTTPS URL: %s", url)
+		}
+		return parts[0], parts[1], nil
+	}
+
+	return "", "", fmt.Errorf("not a GitHub URL: %s", url)
 }
