@@ -25,9 +25,11 @@ Examples:
 }
 
 var flagClearDryRun bool
+var flagClearCommit bool
 
 func init() {
 	clearCmd.Flags().BoolVar(&flagClearDryRun, "dry-run", false, "Show what would be changed without modifying files")
+	clearCmd.Flags().BoolVar(&flagClearCommit, "commit", true, "Commit after clearing")
 	rootCmd.AddCommand(clearCmd)
 }
 
@@ -79,7 +81,7 @@ func runClear(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Cleared craft comments from %d file(s)\n", cleared)
 
-	if !flagClearDryRun {
+	if !flagClearDryRun && flagClearCommit {
 		fmt.Print("Committing... ")
 		if err := vcs.Commit("craft: clear review comments"); err != nil {
 			return fmt.Errorf("committing: %w", err)
