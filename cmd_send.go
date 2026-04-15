@@ -29,6 +29,7 @@ var (
 	flagSendRequestChanges       bool
 	flagSendDiscardPendingReview bool
 	flagSendPending              bool
+	flagSendReplyOnly            bool
 )
 
 func init() {
@@ -37,6 +38,7 @@ func init() {
 	sendCmd.Flags().BoolVar(&flagSendRequestChanges, "request-changes", false, "Submit review requesting changes")
 	sendCmd.Flags().BoolVar(&flagSendDiscardPendingReview, "discard-pending-review", false, "Discard existing pending review if one exists (required when adding new threads)")
 	sendCmd.Flags().BoolVar(&flagSendPending, "pending", false, "Leave review in pending state (don't submit)")
+	sendCmd.Flags().BoolVar(&flagSendReplyOnly, "reply-only", false, "Send only replies to existing threads (skip code change check, skip re-serialize)")
 	sendCmd.MarkFlagsMutuallyExclusive("approve", "request-changes", "pending")
 }
 
@@ -75,8 +77,8 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("PR-STATE.txt missing PR ID; run 'craft get' first")
 	}
 
-	// Check for non-craft code changes
-	if pr.HeadRefOID != "" {
+	// Check for non-craft code changes (skip in reply-only mode)
+	if pr.HeadRefOID != "" && !flagSendReplyOnly {
 		fmt.Print("Checking for code changes... ")
 		if err := CheckForNonCraftChanges(vcs, pr.HeadRefOID); err != nil {
 			fmt.Println("found!")
@@ -89,6 +91,11 @@ func runSend(cmd *cobra.Command, args []string) error {
 	review, err := CollectNewComments(pr)
 	if err != nil {
 		return err
+	}
+
+	// In reply-only mode, error if there are new threads
+	if flagSendReplyOnly && len(review.NewThreads) > 0 {
+		return fmt.Errorf("--reply-only: found %d new thread(s); only replies to existing threads are allowed in this mode", len(review.NewThreads))
 	}
 
 	// Set review event
@@ -156,6 +163,14 @@ func runSend(cmd *cobra.Command, args []string) error {
 	// Send the review
 	if err := review.Send(ctx, client, pr.ID, pr.HeadRefOID, flagSendDiscardPendingReview); err != nil {
 		return err
+	}
+
+	if flagSendReplyOnly {
+		// In reply-only mode, skip re-fetch/re-serialize to preserve code edits.
+		// The user is expected to run 'craft clear' next.
+		fmt.Println("\nReplies sent successfully! (reply-only mode, files unchanged)")
+		fmt.Println("Run 'craft clear' to remove craft comments from source files.")
+		return nil
 	}
 
 	// Re-fetch PR to get updated state with our new comments
